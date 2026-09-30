@@ -2,13 +2,15 @@
 
 *A spectral water study on Vieques* — a real-time **WebGPU** shallow-water demo over **real NOAA topo-bathy** of Vieques, Puerto Rico.
 
+**[Live demo → jasonmatney.github.io/clear-Vieques](https://jasonmatney.github.io/clear-Vieques/)** (needs a WebGPU-capable browser; the first load reads a ~6 MB terrain file).
+
 ![Playa Caracas, hero view](docs/hero.png)
 
 Playa Caracas (Red Beach) is implemented: FFT spectral waves, exact Fresnel, per-channel Beer–Lambert absorption, a refracted **real seabed**, caustics projected onto that seabed, foam, interactive ripples, sky and land. Mosquito Bay (night, bioluminescence) is the next milestone — its data is packed, the tab is present but disabled.
 
 ## Run it
 
-Needs a WebGPU-capable browser. Developed and verified in Chrome 152 on an Apple M3 (both from `http://localhost` and straight from `file://`); other browsers/GPUs are untested.
+Needs a WebGPU-capable browser. Developed and verified in Chrome 152 on an Apple M3 (from `http://localhost`, straight from `file://`, and on GitHub Pages); other browsers/GPUs are untested.
 
 ```bash
 # any of these
