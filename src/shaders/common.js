@@ -34,6 +34,8 @@
     ['tint', 'vec4'],      // debug view id, cloud cover, optics test, unused
     ['crownA', 'vec4'],    // crown map: x0, z0, texel (m), nx
     ['crownB', 'vec4'],    // nz, mean-canopy cell (m), max canopy height (m), unused
+    ['st0', 'vec4'], ['st1', 'vec4'], ['st2', 'vec4'], ['st3', 'vec4'],   // OSM shelters: x, z, yaw, roof half extent (0 = unused)
+    ['st4', 'vec4'], ['st5', 'vec4'], ['st6', 'vec4'], ['st7', 'vec4'],
   ];
   CV.globals = new CV.UniformBlock(CV.GLOBALS);
 
@@ -141,6 +143,22 @@ fn meanCanopy(p : vec2<f32>) -> vec2<f32> {
 }
 // Bare-earth DEM plus the smoothed canopy: what the sun and reflected rays actually meet.
 fn surfaceAt(p : vec2<f32>) -> f32 { return heightAt(p) + meanCanopy(p).x; }
+
+// Soft roof shadow of an OSM picnic shelter on the ground (1 = sunlit, 0.3 = shaded): the roof rectangle projected along the sun.
+fn structOne(s : vec4<f32>, p : vec2<f32>) -> f32 {
+  if (s.w <= 0.0) { return 1.0; }
+  let L = G.sunDir.xyz;
+  let off = -L.xz / max(L.y, 0.05) * 3.2;                     // roof plane ~3.2 m up
+  let d = p - (s.xy + off);
+  let c = cos(s.z); let sn = sin(s.z);
+  let q = vec2<f32>(d.x * c + d.y * sn, -d.x * sn + d.y * c);
+  let e = max(abs(q.x), abs(q.y)) - s.w;
+  return mix(0.30, 1.0, smoothstep(-0.10, 0.45, e));
+}
+fn structShadow(p : vec2<f32>) -> f32 {
+  return min(min(min(structOne(G.st0, p), structOne(G.st1, p)), min(structOne(G.st2, p), structOne(G.st3, p))),
+             min(min(structOne(G.st4, p), structOne(G.st5, p)), min(structOne(G.st6, p), structOne(G.st7, p))));
+}
 
 // ------------------------------------------------------------------ noise (smooth value noise from a random RGBA8 texture)
 fn vnoise4(p : vec2<f32>) -> vec4<f32> {

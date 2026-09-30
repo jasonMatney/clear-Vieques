@@ -40,6 +40,7 @@
       this.sampleCount = 4; this.scale = 0.75; this.width = 0; this.height = 0;
       this.mesh = { seg: 576, rings: 260, r0: 0.5, growth: Math.pow(80000, 1 / 259) };
       this.debugView = 0;
+      this.structs = new CV.Structures(gpu);
       this.timer = new CV.GpuTimer(gpu);
       this.ready = this.init();
     }
@@ -90,6 +91,7 @@
         CV.shader(gpu, 'sky', prelude + CV.wgsl.sky), CV.shader(gpu, 'terrain', prelude + CV.wgsl.terrain()),
         CV.shader(gpu, 'water', prelude + CV.wgsl.water(this.mesh)), CV.shader(gpu, 'post', CV.wgsl.post)]);
       this.modules = { mSky, mTerr, mWater, mPost };
+      await this.structs.ready; this.structs.setSite(this.terrain);
       this.meshLayout = meshLayout;
       this.postBGL = dev.createBindGroupLayout({ entries: [
         { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
@@ -113,6 +115,7 @@
       this.pTerrain = dev.createRenderPipeline({ label: 'terrain', layout: lay2, vertex: { module: mTerr, entryPoint: 'vs_terrain' },
         fragment: { module: mTerr, entryPoint: 'fs_terrain', targets: [{ format: hdr }] }, multisample: ms,
         primitive: { topology: 'triangle-list', cullMode: 'none' }, depthStencil: { ...depth, depthWriteEnabled: true } });
+      this.pStruct = this.structs.pipeline(this.sceneLayout, this.sampleCount);
       this.pWater = dev.createRenderPipeline({ label: 'water', layout: lay1, vertex: { module: mWater, entryPoint: 'vs_water' },
         fragment: { module: mWater, entryPoint: 'fs_water', targets: [{ format: hdr, blend: {
           color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
@@ -176,6 +179,7 @@
       G.set('demInfo', tm.blend, 0, 0, 0);
       G.set('crownA', tm.crown.x0, tm.crown.z0, tm.crown.texel, tm.crown.nx);
       G.set('crownB', tm.crown.nz, n.dx, tm.crown.maxH, 0);
+      for (let i = 0; i < 8; i++) G.set('st' + i, ...this.structs.slots.subarray(i * 4, i * 4 + 4));
       G.set('ripple', ...this.ripples.uniforms());
       const cu = this.caustics.uniforms(); G.set('caustic', ...cu.a); G.set('causticB', ...cu.b);
       const mss = this.waves.mss(); G.set('shore', mss[0], mss[1], mss[2], 0);
@@ -220,6 +224,10 @@
         pass.setBindGroup(1, this.meshBG[0]); pass.setIndexBuffer(near.idx, 'uint32');
         for (const t of near.tiles) { if (t.y1 < seaY || !CV.boxInFrustum(planes, t)) continue; pass.drawIndexed(t.count, 1, 0, t.base); drawn++; }
         this.tilesDrawn = drawn;
+      }
+      if (!skip.terrain && this.structs.count > 0) {
+        pass.setPipeline(this.pStruct); pass.setBindGroup(1, this.structs.bg); pass.setVertexBuffer(0, this.structs.vbuf);
+        pass.draw(this.structs.vertexCount, this.structs.count);
       }
       if (!skip.water) { pass.setPipeline(this.pWater); pass.setIndexBuffer(this.waterIdx, 'uint32'); pass.drawIndexed(this.waterIdxCount); }
       pass.end();
