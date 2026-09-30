@@ -30,7 +30,7 @@
       { binding: 0, visibility: all, buffer: { type: 'uniform' } },
       { binding: 1, visibility: all, sampler: { type: 'filtering' } },
       { binding: 2, visibility: all, sampler: { type: 'filtering' } },
-      tex(3), tex(4), tex(5), tex(6), tex(7, '2d-array'), tex(8, '2d-array'), tex(9), tex(10), tex(11),
+      tex(3), tex(4), tex(5), tex(6), tex(7, '2d-array'), tex(8, '2d-array'), tex(9), tex(10), tex(11), tex(12), tex(13),
     ] });
   };
 
@@ -65,14 +65,15 @@
         { binding: 5, resource: this.terrain.auxTex.createView() }, { binding: 6, resource: this.sky.tex.createView() },
         { binding: 7, resource: this.waves.dispView }, { binding: 8, resource: this.waves.slopeView[i] },
         { binding: 9, resource: this.ripples.out.createView() }, { binding: 10, resource: this.caustics.sceneView },
-        { binding: 11, resource: this.noise.createView() }] });
+        { binding: 11, resource: this.noise.createView() },
+        { binding: 12, resource: this.terrain.crownTex.createView() }, { binding: 13, resource: this.terrain.meanTex.createView() }] });
       this.sceneBG = [make(0), make(1)];
 
       // terrain mesh uniforms
       const mu = (g, isFar) => { const b = CV.buffer(gpu, 32, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, 'meshU');
         gpu.queue.writeBuffer(b, 0, new Float32Array([g.x0, g.z0, g.dx, g.dz, g.nx, g.nz, isFar ? 1 : 0, 0])); return b; };
       const meshLayout = dev.createBindGroupLayout({ entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } }] });
-      this.meshBG = [this.terrain.near, this.terrain.far].map((g, i) => dev.createBindGroup({ layout: meshLayout, entries: [{ binding: 0, resource: { buffer: mu(g, i === 1) } }] }));
+      this.meshBG = [this.terrain.meshNear.grid, this.terrain.meshFar.grid].map((g, i) => dev.createBindGroup({ layout: meshLayout, entries: [{ binding: 0, resource: { buffer: mu(g, i === 1) } }] }));
 
       // water mesh indices
       const { seg, rings } = this.mesh, idx = new Uint32Array((rings - 1) * seg * 6); let k = 0;
@@ -173,11 +174,13 @@
       G.set('demNear', n.x0, n.z0, n.nx * n.dx, n.nz * n.dz);
       G.set('demFar', f.x0, f.z0, f.nx * f.dx, f.nz * f.dz);
       G.set('demInfo', tm.blend, 0, 0, 0);
+      G.set('crownA', tm.crown.x0, tm.crown.z0, tm.crown.texel, tm.crown.nx);
+      G.set('crownB', tm.crown.nz, n.dx, tm.crown.maxH, 0);
       G.set('ripple', ...this.ripples.uniforms());
       const cu = this.caustics.uniforms(); G.set('caustic', ...cu.a); G.set('causticB', ...cu.b);
       const mss = this.waves.mss(); G.set('shore', mss[0], mss[1], mss[2], 0);
       G.set('misc', s.quality || 1, s.night ? 1 : 0, s.moon || 0, 0);
-      G.set('tint', this.debugView, s.cloudCover === undefined ? (this.cloudCover === undefined ? 0.36 : this.cloudCover) : s.cloudCover, this.opticsTest ? 1 : 0, 0);
+      G.set('tint', this.debugView, s.cloudCover === undefined ? (this.cloudCover === undefined ? 0.36 : this.cloudCover) : s.cloudCover, this.opticsTest ? 1 : 0, this.noCrown ? 1 : 0);
       this.gpu.queue.writeBuffer(this.gBuf, 0, G.data);
     }
 
@@ -211,15 +214,16 @@
         // tiles that are off-screen, or lie wholly below the waterline (the water pass replaces them), are not drawn
         const planes = CV.frustumPlanes(s.cam.viewProj), seaY = this.terrain.seaLevel + s.seaOffset - 0.75;
         let drawn = 0;
-        for (const [bg, mesh] of [[1, this.terrain.meshFar], [0, this.terrain.meshNear]]) {
-          pass.setBindGroup(1, this.meshBG[bg]); pass.setIndexBuffer(mesh.buf, 'uint32');
-          for (const t of mesh.tiles) { if (t.y1 < seaY || !CV.boxInFrustum(planes, t)) continue; pass.drawIndexed(t.count, 1, t.first); drawn++; }
-        }
+        const far = this.terrain.meshFar, near = this.terrain.meshNear;
+        pass.setBindGroup(1, this.meshBG[1]); pass.setIndexBuffer(far.buf, 'uint32');
+        for (const t of far.tiles) { if (t.y1 < seaY || !CV.boxInFrustum(planes, t)) continue; pass.drawIndexed(t.count, 1, t.first); drawn++; }
+        pass.setBindGroup(1, this.meshBG[0]); pass.setIndexBuffer(near.idx, 'uint32');
+        for (const t of near.tiles) { if (t.y1 < seaY || !CV.boxInFrustum(planes, t)) continue; pass.drawIndexed(t.count, 1, 0, t.base); drawn++; }
         this.tilesDrawn = drawn;
       }
       if (!skip.water) { pass.setPipeline(this.pWater); pass.setIndexBuffer(this.waterIdx, 'uint32'); pass.drawIndexed(this.waterIdxCount); }
       pass.end();
-      gpu.queue.writeBuffer(this.pBuf, 0, new Float32Array([s.exposureLin, s.vignette, (s.time * 60) % 1000, 1.12, 0, this.width, this.height, 0]));
+      gpu.queue.writeBuffer(this.pBuf, 0, new Float32Array([s.exposureLin, s.vignette, (s.time * 60) % 1000, 1.12, this.debugView === 7 ? 1 : 0, this.width, this.height, 0]));
       if (this.upscale) {
         const g = enc.beginRenderPass({ label: 'grade', timestampWrites: CV.tw('grade'), colorAttachments: [{ view: this.ldrView, loadOp: 'clear', clearValue: [0, 0, 0, 1], storeOp: 'store' }] });
         g.setPipeline(this.pGrade); g.setBindGroup(0, this.postBG); g.draw(3); g.end();

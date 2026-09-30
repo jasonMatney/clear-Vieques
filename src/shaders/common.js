@@ -30,8 +30,10 @@
     ['caustic', 'vec4'],   // origin x, origin z, size (m), intensity
     ['causticB', 'vec4'],  // texel (m), max lod, fade start (m), fade end (m)
     ['shore', 'vec4'],     // swash amplitude, ...
-    ['misc', 'vec4'],      // quality, night, moon, unused
-    ['tint', 'vec4'],      // debug view id, ...
+    ['misc', 'vec4'],      // quality, night, moon, site material set (0 = dry-forest coast, 1 = mangrove lagoon)
+    ['tint', 'vec4'],      // debug view id, cloud cover, optics test, unused
+    ['crownA', 'vec4'],    // crown map: x0, z0, texel (m), nx
+    ['crownB', 'vec4'],    // nz, mean-canopy cell (m), max canopy height (m), unused
   ];
   CV.globals = new CV.UniformBlock(CV.GLOBALS);
 
@@ -51,6 +53,8 @@ ${CV.globals.wgsl('Globals')}
 @group(0) @binding(9)  var rippleTex : texture_2d<f32>;
 @group(0) @binding(10) var causticTex : texture_2d<f32>;
 @group(0) @binding(11) var noiseTex : texture_2d<f32>;
+@group(0) @binding(12) var crownTex : texture_2d<f32>;   // tree crowns, 2 m texels (rgba8): centre offset x, z, crown height, id
+@group(0) @binding(13) var meanTex : texture_2d<f32>;    // stand mean, 4 m texels on the near-DEM grid (rgba8): mean canopy height, tree fraction, -, -
 
 const PI : f32 = 3.14159265359;
 const TAU : f32 = 6.28318530718;
@@ -92,6 +96,51 @@ fn auxAt(p : vec2<f32>) -> vec4<f32> {
   if (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) { return vec4<f32>(max(heightFar(p), 0.0) * 12.0 - 30.0, 0.0, 64.0, 0.0); }
   return textureSampleLevel(auxTex, samLin, uv, 0.0);
 }
+
+// ------------------------------------------------------------------ tree canopy (baked by CV.Canopy from the DEM + land classification)
+// Each 2 m texel of crownTex holds the nearest crown: offset to its centre (metres, +-CROWN_OFF/2), crown height (/CANOPY_MAX) and a random id.
+// A crown is an analytic dome: radius from the id, h(r) = H * (0.5 * floor(r) + 0.5 * (1 - r^2)^0.75); the floor (foliage between crowns) fades out
+// beyond ~1.9 R so open ground next to a crown stays at ground level.
+const CROWN_OFF : f32 = 16.0;
+struct Crown { c : vec2<f32>, H : f32, R : f32, id : f32 };
+fn crownAt(p : vec2<f32>) -> Crown {
+  var cr : Crown; cr.H = 0.0; cr.R = 3.0; cr.id = 0.0; cr.c = p;
+  let t = (p - G.crownA.xy) / G.crownA.z;
+  if (t.x < 0.0 || t.y < 0.0 || t.x >= G.crownA.w || t.y >= G.crownB.x) { return cr; }
+  let ti = vec2<i32>(floor(t));
+  let d = textureLoad(crownTex, ti, 0);
+  cr.c = (vec2<f32>(ti) + 0.5) * G.crownA.z + G.crownA.xy + (d.xy - 0.5) * CROWN_OFF;
+  cr.H = d.z * G.crownB.z;
+  cr.id = d.w;
+  cr.R = 3.0 + 2.4 * fract(d.w * 7.31 + 0.17);
+  return cr;
+}
+// tf = local tree fraction (foliage between crowns exists only inside a dense stand, never beside open sand)
+fn crownProfile(r : f32, tf : f32) -> f32 {
+  let dome = pow(max(1.0 - pow(r, 2.4), 0.0), 0.55);         // flat-topped, steep-sided (umbrella crowns): survives 2 m mesh sampling without turning into cones
+  return 0.50 * (1.0 - smoothstep(1.30, 2.1, r)) * smoothstep(0.55, 0.90, tf) + 0.50 * dome;
+}
+fn crownH(p : vec2<f32>, cr : Crown, tf : f32) -> f32 {
+  if (cr.H <= 0.0) { return 0.0; }
+  return cr.H * crownProfile(length(p - cr.c) / cr.R, tf);
+}
+// surface slope (dh/dx, dh/dz) of the crown dome at p (finite difference of the analytic profile; capped near the rim)
+fn crownGrad(p : vec2<f32>, cr : Crown, tf : f32) -> vec2<f32> {
+  if (cr.H <= 0.0) { return vec2<f32>(0.0); }
+  let e = 0.35;
+  let hx = crownH(p + vec2<f32>(e, 0.0), cr, tf) - crownH(p - vec2<f32>(e, 0.0), cr, tf);
+  let hz = crownH(p + vec2<f32>(0.0, e), cr, tf) - crownH(p - vec2<f32>(0.0, e), cr, tf);
+  return clamp(vec2<f32>(hx, hz) / (2.0 * e), vec2<f32>(-2.5), vec2<f32>(2.5));
+}
+// smooth stand height (m) and tree fraction on the 4 m near-DEM grid: used for shadows, reflections and the far view
+fn meanCanopy(p : vec2<f32>) -> vec2<f32> {
+  let uv = (p - G.demNear.xy) / G.demNear.zw;
+  if (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) { return vec2<f32>(0.0); }
+  let m = textureSampleLevel(meanTex, samLin, uv, 0.0);
+  return vec2<f32>(m.x * G.crownB.z, m.y);
+}
+// Bare-earth DEM plus the smoothed canopy: what the sun and reflected rays actually meet.
+fn surfaceAt(p : vec2<f32>) -> f32 { return heightAt(p) + meanCanopy(p).x; }
 
 // ------------------------------------------------------------------ noise (smooth value noise from a random RGBA8 texture)
 fn vnoise4(p : vec2<f32>) -> vec4<f32> {
@@ -281,7 +330,7 @@ fn sunShadow(p : vec3<f32>, jitter : f32) -> f32 {
   var t = 1.5 + jitter; var vis = 1.0;
   for (var i = 0; i < 20; i++) {
     let q = p + L * t;
-    let d = q.y - heightAt(q.xz);
+    let d = q.y - surfaceAt(q.xz);
     vis = min(vis, clamp(d / (0.09 * t + 0.6), 0.0, 1.0));
     if (vis <= 0.001 || q.y > 340.0) { break; }
     t *= 1.34;
@@ -297,7 +346,7 @@ fn marchLand(o : vec3<f32>, r : vec3<f32>, soft : f32) -> vec4<f32> {
   var minClear = 1e9; var tMin = 4.0;
   for (var i = 0; i < 44; i++) {
     let q = o + r * t;
-    let h = heightAt(q.xz);
+    let h = surfaceAt(q.xz);
     let d = q.y - h;
     let clear = d / t;                       // tan(angular clearance above the terrain) seen from the origin
     if (clear < minClear) { minClear = clear; tMin = t; }
@@ -305,7 +354,7 @@ fn marchLand(o : vec3<f32>, r : vec3<f32>, soft : f32) -> vec4<f32> {
       var a = tPrev; var b = t;
       for (var k = 0; k < 4; k++) {
         let m = 0.5 * (a + b); let qm = o + r * m;
-        if (qm.y - heightAt(qm.xz) > 0.0) { a = m; } else { b = m; }
+        if (qm.y - surfaceAt(qm.xz) > 0.0) { a = m; } else { b = m; }
       }
       return vec4<f32>(o + r * (0.5 * (a + b)), (1.0 - smoothstep(-soft, soft, clear)) * 0.98);
     }

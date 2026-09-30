@@ -134,34 +134,65 @@
       this.auxTex = device.createTexture({ label: 'terrainAux', size: [n.nx, n.nz], format: 'rgba16float', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
       queue.writeTexture({ texture: this.auxTex }, CV.toHalf(this.aux), { bytesPerRow: n.nx * 8 }, [n.nx, n.nz]);
 
-      // Grid meshes (indexed; vertex positions are derived from the vertex index + DEM texture in the vertex shader). The index buffer is grouped
-      // into TILE x TILE-cell tiles, each with a bounding box, so the renderer can skip tiles that are off-screen or entirely under water.
+      // Tree-canopy maps (filled by CV.Canopy.bake): crowns at 2 m over the near window, stand mean on the near-DEM grid.
+      const cTexel = 2.0, cnx = Math.round(n.nx * n.dx / cTexel), cnz = Math.round(n.nz * n.dz / cTexel);
+      this.crown = { x0: n.x0, z0: n.z0, texel: cTexel, nx: cnx, nz: cnz, maxH: 16 };
+      const cu = GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING;
+      this.crownTex = device.createTexture({ label: 'crownMap', size: [cnx, cnz], format: 'rgba8unorm', usage: cu });
+      this.meanTex = device.createTexture({ label: 'canopyMean', size: [n.nx, n.nz], format: 'rgba8unorm', usage: cu });
+      this.canopyBaked = false;
+
+      // Grid meshes (vertex positions are derived from the vertex id + DEM texture in the vertex shader).
+      // FAR: 20 m cells, one index buffer grouped into tiles (each with a bounding box) so tiles that are off-screen or under water can be skipped.
       const TILE = 32;
-      const build = (g, skipInsideNear) => {
+      const buildFar = (g) => {
         const cellsX = g.nx - 1, cellsZ = g.nz - 1, tilesX = Math.ceil(cellsX / TILE), tilesZ = Math.ceil(cellsZ / TILE);
         const r = this.nearRect, inner = this.blend;
         let count = 0; const arr = new Uint32Array(cellsX * cellsZ * 6), tiles = [];
         for (let tj = 0; tj < tilesZ; tj++) for (let ti = 0; ti < tilesX; ti++) {
           const first = count, i0 = ti * TILE, j0 = tj * TILE, i1 = Math.min(cellsX, i0 + TILE), j1 = Math.min(cellsZ, j0 + TILE);
           for (let j = j0; j < j1; j++) for (let i = i0; i < i1; i++) {
-            if (skipInsideNear) { // cell fully inside the fully-blended interior of the near window -> drawn by the near mesh
-              const xa = g.x0 + (i + 0.5) * g.dx, xb = g.x0 + (i + 1.5) * g.dx, za = g.z0 + (j + 0.5) * g.dz, zb = g.z0 + (j + 1.5) * g.dz;
-              if (xa > r.x0 + inner && xb < r.x1 - inner && za > r.z0 + inner && zb < r.z1 - inner) continue;
-            }
+            // cell fully inside the fully-blended interior of the near window -> drawn by the near mesh
+            const xa = g.x0 + (i + 0.5) * g.dx, xb = g.x0 + (i + 1.5) * g.dx, za = g.z0 + (j + 0.5) * g.dz, zb = g.z0 + (j + 1.5) * g.dz;
+            if (xa > r.x0 + inner && xb < r.x1 - inner && za > r.z0 + inner && zb < r.z1 - inner) continue;
             const a = j * g.nx + i, b = a + 1, c = a + g.nx, d = c + 1;
             arr[count++] = a; arr[count++] = c; arr[count++] = b; arr[count++] = b; arr[count++] = c; arr[count++] = d;
           }
           if (count === first) continue;
-          let hMin = 1e9, hMax = -1e9;   // vertex heights of the tile (the far mesh also samples the near grid inside the blend zone: small margin below)
+          let hMin = 1e9, hMax = -1e9;   // vertex heights of the tile (the far mesh also samples the near grid inside the blend zone: small margin)
           for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) { const h = g.h[j * g.nx + i]; if (h < hMin) hMin = h; if (h > hMax) hMax = h; }
           tiles.push({ first, count: count - first, x0: g.x0 + (i0 + 0.5) * g.dx, x1: g.x0 + (i1 + 0.5) * g.dx, z0: g.z0 + (j0 + 0.5) * g.dz, z1: g.z0 + (j1 + 0.5) * g.dz, y0: hMin - 6, y1: hMax + 6 });
         }
-        const buf = device.createBuffer({ label: 'terrainIdx', size: count * 4, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST });
+        const buf = device.createBuffer({ label: 'terrainIdxFar', size: count * 4, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST });
         queue.writeBuffer(buf, 0, arr.buffer, 0, count * 4);
-        return { buf, count, tiles };
+        return { buf, count, tiles, grid: { x0: g.x0, z0: g.z0, dx: g.dx, dz: g.dz, nx: g.nx, nz: g.nz } };
       };
-      this.meshNear = build(this.near, false);
-      this.meshFar = build(this.far, true);
+      // NEAR: 2 m cells (half the DEM spacing) so tree crowns are several vertices wide. Every tile draws the same 32x32-cell index pattern; the tile is
+      // selected with baseVertex, so the index buffer is 24 KB instead of tens of MB. The DEM is bilinearly interpolated between its 4 m samples.
+      const buildNear = () => {
+        const cell = 2.0, nx = Math.round(n.nx * n.dx / cell), nz = Math.round(n.nz * n.dz / cell), T = 32;
+        const pat = new Uint32Array(T * T * 6); let k = 0;
+        for (let j = 0; j < T; j++) for (let i = 0; i < T; i++) {
+          const a = j * nx + i, b = a + 1, c = a + nx, d = c + 1;
+          pat[k++] = a; pat[k++] = c; pat[k++] = b; pat[k++] = b; pat[k++] = c; pat[k++] = d;
+        }
+        const idx = device.createBuffer({ label: 'terrainIdxNear', size: pat.byteLength, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST });
+        queue.writeBuffer(idx, 0, pat);
+        const tiles = [], tx = Math.ceil((nx - 1) / T), tz = Math.ceil((nz - 1) / T), canopyMax = this.crown.maxH;
+        for (let tj = 0; tj < tz; tj++) for (let ti = 0; ti < tx; ti++) {
+          const i0 = ti * T, j0 = tj * T;
+          if (i0 + T > nx - 1 || j0 + T > nz - 1) continue;          // partial edge tiles are dropped (window edge, fully inside the far mesh's blend band)
+          const x0 = n.x0 + (i0 + 0.5) * cell, x1 = x0 + T * cell, z0 = n.z0 + (j0 + 0.5) * cell, z1 = z0 + T * cell;
+          const ga = Math.max(0, Math.floor((x0 - n.x0) / n.dx) - 1), gb = Math.min(n.nx - 1, Math.ceil((x1 - n.x0) / n.dx) + 1);
+          const gc = Math.max(0, Math.floor((z0 - n.z0) / n.dz) - 1), gd = Math.min(n.nz - 1, Math.ceil((z1 - n.z0) / n.dz) + 1);
+          let hMin = 1e9, hMax = -1e9;
+          for (let j = gc; j <= gd; j++) for (let i = ga; i <= gb; i++) { const h = n.h[j * n.nx + i]; if (h < hMin) hMin = h; if (h > hMax) hMax = h; }
+          tiles.push({ base: j0 * nx + i0, count: T * T * 6, x0, x1, z0, z1, y0: hMin - 6, y1: hMax + canopyMax + 2 });
+        }
+        return { idx, tiles, grid: { x0: n.x0, z0: n.z0, dx: cell, dz: cell, nx, nz } };
+      };
+      this.meshNear = buildNear();
+      this.meshFar = buildFar(this.far);
     }
   };
 })();

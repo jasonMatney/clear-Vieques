@@ -46,13 +46,17 @@
 
     ui.loadMsg('Compiling optics…');
     const renderer = app.renderer = new CV.Renderer(gpu, terrain, sky, waves, ripples, caustics, mip, sceneLayout);
-    await renderer.ready;
+    const canopy = app.canopy = new CV.Canopy(gpu, sceneLayout);
+    await Promise.all([renderer.ready, canopy.ready]);
+    ui.loadMsg('Growing the forest…');
+    canopy.bake(terrain, { samLin: renderer.samLin, samRep: renderer.samRep, noise: renderer.noise });
     if (params.has('quality')) app.quality = CV.clamp(parseInt(params.get('quality')) || 0, 0, 2);
     applyTier(app.quality);
     if (params.has('msaa')) renderer.setSamples(parseInt(params.get('msaa')) || 1);
     if (params.has('scale')) { renderer.scale = parseFloat(params.get('scale')); app.fixedScale = true; }
     else setRung((window.devicePixelRatio || 1) > 1.5 ? 2 : 4);
     if (params.has('debug')) renderer.debugView = parseInt(params.get('debug')) || 0;
+    if (params.get('nocrown') === '1') renderer.noCrown = true;      // diagnostics: flat-shaded terrain without the canopy displacement
     if (params.get('ui') === '0') { document.body.classList.add('hidden'); $('hide').textContent = 'Show controls ↗'; }
     if (params.has('t')) app.fixedTime = parseFloat(params.get('t')) || 0;   // freeze the wave clock (reproducible frames)
 

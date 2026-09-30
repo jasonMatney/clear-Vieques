@@ -25,70 +25,110 @@ fn crownField(p : vec2<f32>, size : f32) -> vec4<f32> {
 
 fn sandAlbedo(p : vec2<f32>, dist : f32) -> vec3<f32> {
   let n1 = vnoise4(p * 0.028);
+  let n2 = fadeN(vnoise4(p * 0.35), dist, 40.0, 300.0);
   let grain = fadeN(vnoise4(p * 8.5), dist, 8.0, 70.0);
+  let speck = fadeN(vnoise4(p * 23.0), dist, 4.0, 30.0);     // shell / coral fragments and dark grains
   let white = vec3<f32>(0.54, 0.51, 0.455);
-  let pink = vec3<f32>(0.53, 0.42, 0.37);
-  let a = mix(white, pink, smoothstep(0.55, 0.88, n1.g) * 0.55);
-  return a * (0.91 + 0.18 * grain.g);
+  let pink = vec3<f32>(0.53, 0.40, 0.35);                    // foraminifera-rich sand: the "red" of Red Beach
+  let a = mix(white, pink, smoothstep(0.50, 0.88, n1.g) * 0.55 + 0.20 * smoothstep(0.60, 0.90, n2.r));
+  var c = a * (0.91 + 0.18 * grain.g);
+  c *= 1.0 + 0.24 * smoothstep(0.86, 0.97, speck.r) - 0.20 * smoothstep(0.12, 0.03, speck.g);
+  return c;
 }
 
-struct LandMat { albedo : vec3<f32>, sandW : f32, rockW : f32, vegW : f32, tilt : vec2<f32>, occ : f32 };
-
-fn landMaterial(p : vec3<f32>, n : vec3<f32>, aux : vec4<f32>, dist : f32) -> LandMat {
-  let elev = p.y - seaLevel();
+// ---- land classification: shared by the canopy bake (compute, dist = 0) and the terrain shading (fragment)
+struct LandCls {
+  sandW : f32, rockW : f32, plain : f32, scrub : f32, trackW : f32, vegW : f32, dryMix : f32, sandEdge : f32, elev : f32,
+  n1 : vec4<f32>, n2 : vec4<f32>, n3 : vec4<f32>, n4 : vec4<f32>,
+};
+fn landClass(pxz : vec2<f32>, n : vec3<f32>, aux : vec4<f32>, dist : f32) -> LandCls {
+  var c : LandCls;
+  c.elev = heightAt(pxz) - seaLevel();
   let slope = 1.0 - n.y;
   let sd = aux.x;
-  let n1 = vnoise4(p.xz * 0.018);
-  let n2 = fadeN(vnoise4(p.xz * 0.11), dist, 900.0, 3500.0);
-  let n3 = fadeN(vnoise4(p.xz * 0.75), dist, 60.0, 420.0);
-  let n4 = fadeN(vnoise4(p.xz * 3.1), dist, 25.0, 160.0);
-
+  c.n1 = vnoise4(pxz * 0.018);
+  c.n2 = fadeN(vnoise4(pxz * 0.11), dist, 900.0, 3500.0);
+  c.n3 = fadeN(vnoise4(pxz * 0.75), dist, 60.0, 420.0);
+  c.n4 = fadeN(vnoise4(pxz * 3.1), dist, 25.0, 160.0);
   // beach: back-beach limit varies along the shore; the low coastal plain behind it is dry scrub / grass, not sand
-  let sandEdge = 9.0 + 26.0 * n1.g + 7.0 * (n3.r - 0.5);          // irregular vegetation line
-  var sandW = 1.0 - smoothstep(sandEdge, sandEdge + 1.6, sd);
+  c.sandEdge = 9.0 + 26.0 * c.n1.g + 7.0 * (c.n3.r - 0.5);          // irregular vegetation line
+  var sandW = 1.0 - smoothstep(c.sandEdge, c.sandEdge + 1.6, sd);
   sandW *= 1.0 - smoothstep(0.08, 0.24, slope);
-  sandW *= 1.0 - smoothstep(3.2, 5.5, elev);
-  let rockW = smoothstep(0.17, 0.34, slope) * (0.55 + 0.45 * n2.b) * (1.0 - sandW);
+  sandW *= 1.0 - smoothstep(3.2, 5.5, c.elev);
+  c.sandW = sandW;
+  c.rockW = smoothstep(0.17, 0.34, slope) * (0.55 + 0.45 * c.n2.b) * (1.0 - sandW);
+  c.dryMix = smoothstep(0.35, 0.80, c.n1.r * 0.55 + c.n2.g * 0.45);
+  c.plain = (1.0 - smoothstep(1.5, 6.0, c.elev)) * (1.0 - smoothstep(0.03, 0.10, slope));       // low, flat coastal plain: grass and scrub
+  c.scrub = smoothstep(c.sandEdge - 1.0, c.sandEdge + 3.0, sd) * (1.0 - smoothstep(c.sandEdge + 6.0, c.sandEdge + 40.0, sd));   // sea-grape band behind the sand
+  c.trackW = 1.0 - smoothstep(1.1, 2.3, aux.z);
+  c.vegW = (1.0 - sandW) * (1.0 - c.rockW) * (1.0 - c.trackW);
+  return c;
+}
 
-  // dry-forest palette (linear reflectance)
-  let leafGreen = vec3<f32>(0.040, 0.056, 0.025);
-  let leafDark = vec3<f32>(0.017, 0.029, 0.014);
-  let leafDry = vec3<f32>(0.105, 0.088, 0.050);
+struct LandMat { albedo : vec3<f32>, sandW : f32, rockW : f32, canopy : f32, nAdd : vec3<f32>, occ : f32 };
+
+fn landMaterial(pxz : vec2<f32>, n : vec3<f32>, V : vec3<f32>, dist : f32, c : LandCls) -> LandMat {
+  // dry-forest palette (linear reflectance), a little muted: this is a tropical dry forest in the trades, not a rainforest
+  let leafGreen = vec3<f32>(0.040, 0.055, 0.026);
+  let leafDark = vec3<f32>(0.018, 0.029, 0.014);
+  let leafDry = vec3<f32>(0.098, 0.083, 0.050);
+  let seaGrape = vec3<f32>(0.056, 0.090, 0.030);
   let grass = vec3<f32>(0.150, 0.135, 0.070);
-  let dryMix = smoothstep(0.35, 0.80, n1.r * 0.55 + n2.g * 0.45);
+  let under = vec3<f32>(0.034, 0.025, 0.016);
 
-  // canopy crowns (two octaves), fading to the mean colour with distance
-  let cf = crownField(p.xz, 8.0);
-  let cf2 = crownField(p.xz + vec2<f32>(31.7, 12.9), 3.4);
-  let fadeC = 1.0 - smoothstep(300.0, 1500.0, dist);
-  let dome = 1.0 - smoothstep(0.12, 0.66, cf.x);
-  let dome2 = 1.0 - smoothstep(0.12, 0.70, cf2.x);
-  var crown = mix(leafGreen, leafDry, smoothstep(0.30, 0.95, cf.y) * (0.35 + 0.65 * dryMix));
-  crown = mix(crown, leafDark, smoothstep(0.55, 0.0, cf.y) * 0.55);
-  let lum = 0.16 + 1.5 * (0.62 * dome + 0.38 * dome2) * (0.65 + 0.7 * n3.r);
-  let vegMean = mix(leafGreen, leafDry, dryMix * 0.55) * 0.95;
-  var veg = mix(vegMean, crown * lum, fadeC);
-  // low, flat coastal plain: grass and scrub
-  let plain = (1.0 - smoothstep(1.5, 6.0, elev)) * (1.0 - smoothstep(0.03, 0.10, slope));
-  veg = mix(veg, mix(grass, leafDry, 0.35 * n3.g) * (0.75 + 0.5 * n4.r), plain * (0.55 + 0.35 * n2.g));
-  // sea-grape / beach scrub band behind the sand: brighter green
-  let scrub = smoothstep(sandEdge - 1.0, sandEdge + 3.0, sd) * (1.0 - smoothstep(sandEdge + 6.0, sandEdge + 40.0, sd));
-  let cf3 = crownField(p.xz + vec2<f32>(5.3, 71.1), 2.3);
-  let clump = (1.0 - smoothstep(0.10, 0.62, cf3.x)) * smoothstep(0.35, 0.65, n2.g + 0.2 * (n3.r - 0.5));
-  veg = mix(veg, vec3<f32>(0.058, 0.094, 0.030) * (0.55 + 0.9 * dome2), scrub * 0.55);
-  let scrubClump = scrub * clump * (1.0 - fadeC * 0.0);
-  let rock = mix(vec3<f32>(0.31, 0.28, 0.23), vec3<f32>(0.19, 0.17, 0.14), n3.g) * (0.70 + 0.50 * n4.r);
-  let soil = vec3<f32>(0.30, 0.22, 0.14) * (0.85 + 0.3 * n4.b);
-  var alb = mix(veg, rock, rockW);
-  alb = mix(alb, sandAlbedo(p.xz, dist), sandW);
-  alb = mix(alb, vec3<f32>(0.050, 0.082, 0.026) * (0.5 + 1.0 * (1.0 - cf3.x)), clamp(scrubClump * 1.4, 0.0, 1.0) * (1.0 - smoothstep(400.0, 1200.0, dist) * 0.7));
-  let trackW = 1.0 - smoothstep(1.1, 2.3, aux.z);
-  alb = mix(alb, soil, trackW * (1.0 - 0.6 * sandW));
+  let cr = crownAt(pxz);
+  let treeFrac = meanCanopy(pxz).y;
+  // ground metres covered by one pixel along the view: individual crowns (~3 m radius) are drawn only where they are resolved, otherwise the stand mean
+  let foot = dist * G.camFwd.w / max(dot(n, V), 0.12);
+  let resolved = 1.0 - smoothstep(1.0, 3.6, foot);
+  let hasCrown = cr.H > 0.5;
+  let rr = length(pxz - cr.c) / cr.R;
+  let inCrown = select(0.0, 1.0 - smoothstep(0.92, 1.12, rr), hasCrown);
+  let cover = mix(treeFrac, inCrown, resolved);                     // how much of this pixel is foliage
+  let canopyMean = mix(leafGreen, leafDry, c.dryMix * 0.55) * 0.80;
+  // dry grass and litter between trees and on the plain, with tufts (~10-30 cm) and bare-soil flecks visible at close range
+  let g1 = fadeN(vnoise4(pxz * 9.0), dist, 10.0, 60.0); let g2 = fadeN(vnoise4(pxz * 31.0), dist, 4.0, 22.0);
+  var groundCover = mix(grass, leafDry, 0.35 * c.n3.g) * (0.75 + 0.5 * c.n4.r) * (0.80 + 0.40 * g1.r) * (0.88 + 0.24 * g2.g);
+  groundCover = mix(groundCover, vec3<f32>(0.060, 0.082, 0.032), smoothstep(0.62, 0.86, g1.g) * 0.55);          // green tufts
+  groundCover = mix(groundCover, vec3<f32>(0.19, 0.15, 0.10), smoothstep(0.80, 0.95, g2.r) * 0.35);            // bare soil flecks
+  let meanCol = mix(groundCover, canopyMean, treeFrac);
+  var veg = meanCol; var occ = 1.0; var nAdd = vec3<f32>(0.0);
+  if (resolved > 0.0) {
+    var detailCol = groundCover;
+    if (hasCrown) {
+      let idv = cr.id;
+      let hfrac = crownProfile(rr, treeFrac);
+      let dryK = smoothstep(0.30, 0.95, fract(idv * 5.17 + 0.31)) * (0.30 + 0.70 * c.dryMix);      // deciduous crowns go yellow-brown in the dry season
+      var leaf = mix(leafGreen, leafDry, dryK);
+      leaf = mix(leaf, leafDark, smoothstep(0.55, 0.0, fract(idv * 3.77)) * 0.5);                    // dark evergreen crowns
+      leaf = mix(leaf, seaGrape, c.scrub * 0.85);
+      leaf *= 0.85 + 0.30 * fract(idv * 11.13);
+      let ln = fadeN(vnoise4(pxz * 1.9 + vec2<f32>(idv * 17.0, 3.0)), dist, 30.0, 220.0);            // leaf clumps (~0.5 m)
+      let ls = fadeN(vnoise4(pxz * 7.3 + vec2<f32>(5.0, idv * 9.0)), dist, 8.0, 70.0);               // leaf speckle (~15 cm)
+      leaf *= (0.78 + 0.44 * ln.r) * (0.86 + 0.28 * ls.g);
+      // between crowns: shaded foliage inside a dense stand (dark green), bare litter beyond it
+      let floorFol = smoothstep(0.55, 0.90, treeFrac) * (1.0 - smoothstep(1.30, 2.10, rr));
+      detailCol = mix(mix(under * (0.7 + 0.6 * ln.g), leafDark * 0.75 * (0.8 + 0.4 * ln.g), floorFol), leaf, inCrown);
+      // light and shade come from the dome itself: tilted normal, dark low gaps, bright tops. Gaps between crowns are only visible when
+      // looking down into the canopy; at grazing angles the crowns in front hide them (this removes the dark rim along ridges).
+      let gapVis = smoothstep(0.10, 0.55, clamp(dot(n, V), 0.0, 1.0));
+      let underForest = 1.0 - c.sandW;                       // open sand beside a crown is not understorey shade
+      occ = mix(1.0, mix(0.28, 1.0, smoothstep(0.52, 0.92, hfrac)), gapVis * resolved * underForest);
+      let g = crownGrad(pxz, cr, treeFrac);
+      nAdd = vec3<f32>(-g.x, 0.0, -g.y) * 0.85 * resolved * underForest;
+    }
+    veg = mix(meanCol, detailCol, resolved);
+  }
+  let rock = mix(vec3<f32>(0.31, 0.28, 0.23), vec3<f32>(0.19, 0.17, 0.14), c.n3.g) * (0.70 + 0.50 * c.n4.r);
+  let soil = vec3<f32>(0.30, 0.22, 0.14) * (0.85 + 0.3 * c.n4.b);
+  let sandW = c.sandW * (1.0 - 0.97 * cover);                        // a tree standing on the sand line is a tree, not sand
+  var alb = mix(veg, rock, c.rockW);
+  alb = mix(alb, sandAlbedo(pxz, dist), sandW);
+  alb = mix(alb, soil, c.trackW * (1.0 - 0.6 * sandW) * (1.0 - cover));
   var m : LandMat;
-  let vegW = (1.0 - sandW) * (1.0 - rockW) * (1.0 - trackW);
-  m.albedo = alb; m.sandW = sandW; m.rockW = rockW; m.vegW = vegW;
-  m.tilt = -vec2<f32>(cf.z, cf.w) * 0.55 * dome * fadeC * (1.0 - plain);
-  m.occ = mix(1.0, 0.42 + 0.58 * (0.6 * dome + 0.4 * dome2), fadeC * vegW * (1.0 - 0.7 * plain));
+  m.albedo = alb; m.sandW = sandW; m.rockW = c.rockW;
+  m.canopy = clamp(cover, 0.0, 1.0) * (1.0 - c.rockW);
+  m.nAdd = nAdd; m.occ = occ;
   return m;
 }
 
@@ -117,6 +157,8 @@ fn seabedAlbedo(q : vec3<f32>, nb : vec3<f32>, depth : f32, dist : f32) -> vec3<
   return a;
 }
 `;
+
+  CV.wgsl.materials = materials;
 
   // ------------------------------------------------------------------------------------------------ sky
   CV.wgsl.sky = /* wgsl */`
@@ -149,6 +191,15 @@ struct TVOut { @builtin(position) pos : vec4<f32>, @location(0) wpos : vec3<f32>
   let xz = vec2<f32>(M.info.x + (f32(i) + 0.5) * M.info.z, M.info.y + (f32(j) + 0.5) * M.info.w);
   var h = heightAt(xz);
   if (M.dims.z > 0.5) { h -= 0.7 * nearWeight(xz); }
+  else if (G.tint.w < 0.5) {   // tree crowns: the near mesh carries the canopy so ridges have a tree-shaped skyline
+    // a 2 m vertex grid cannot represent a 5 m dome: sample the analytic crown height on a 2x2 footprint (box filter) instead of one aliased point
+    let tf = meanCanopy(xz).y; var ch = 0.0;
+    for (var k = 0; k < 4; k++) {
+      let q = xz + vec2<f32>(select(-0.9, 0.9, (k & 1) == 1), select(-0.9, 0.9, (k & 2) == 2));
+      ch += crownH(q, crownAt(q), tf);
+    }
+    h += 0.25 * ch;
+  }
   var o : TVOut;
   o.wpos = vec3<f32>(xz.x, h, xz.y);
   o.pos = G.viewProj * vec4<f32>(o.wpos, 1.0);
@@ -158,35 +209,44 @@ struct TVOut { @builtin(position) pos : vec4<f32>, @location(0) wpos : vec3<f32>
 // Radiance of a lit ground point (shared by the terrain pass and by reflections in water).
 fn shadeLand(p : vec3<f32>, V : vec3<f32>, dist : f32, withShadow : bool, jit : f32) -> vec3<f32> {
   let sea = seaLevel();
+  let pxz = p.xz;
+  let ground = heightAt(pxz);                                // bare earth: p.y may sit on a crown
   let eps = max(4.0, dist * 0.004);
-  var n = terrainNormal(p.xz, eps);
-  let aux = auxAt(p.xz);
-  let mat = landMaterial(p, n, aux, dist);
-  // micro relief: canopy bumps on vegetation, faint ripples on sand
-  let nb = fadeN(vnoise4(p.xz * 1.7), dist, 40.0, 250.0);
-  let bump = mix(0.16, 0.03, mat.sandW);
-  n = normalize(n + vec3<f32>(nb.r - 0.5, 0.0, nb.g - 0.5) * bump * (1.0 - 0.6 * mat.rockW) + vec3<f32>(mat.tilt.x, 0.0, mat.tilt.y));
+  let nG = terrainNormal(pxz, eps);
+  let aux = auxAt(pxz);
+  let cls = landClass(pxz, nG, aux, dist);
+  let mat = landMaterial(pxz, nG, V, dist, cls);
+  var n = nG;
+  // micro relief: leaf-clump bumps on vegetation, faint ripples on sand; crown domes tilt the normal (mat.nAdd)
+  let nb = fadeN(vnoise4(pxz * 1.7), dist, 40.0, 250.0);
+  let bump = mix(0.12, 0.03, mat.sandW);
+  n = normalize(n + vec3<f32>(nb.r - 0.5, 0.0, nb.g - 0.5) * bump * (1.0 - 0.6 * mat.rockW) + mat.nAdd);
   // wind ripples on dry sand (~14 cm crest spacing, aligned across the wind)
-  let ripPh = dot(p.xz, vec2<f32>(0.60, -0.80)) * 46.0 + nb.b * 5.0;
+  let ripPh = dot(pxz, vec2<f32>(0.60, -0.80)) * 46.0 + nb.b * 5.0;
   let ripK = mat.sandW * (1.0 - smoothstep(30.0, 160.0, dist)) * 0.24;
   n = normalize(n + vec3<f32>(0.60, 0.0, -0.80) * cos(ripPh) * ripK);
   // dune-scale undulation (5-20 m) so large sand faces are not perfectly smooth
-  let dn = vnoise4(p.xz * 0.09);
+  let dn = vnoise4(pxz * 0.09);
   n = normalize(n + vec3<f32>(dn.r - 0.5, 0.0, dn.g - 0.5) * 0.10 * mat.sandW * (1.0 - smoothstep(60.0, 500.0, dist)));
 
-  // wetness (swash zone): darkened, glossy sand up to the recent run-up level
-  let hw = waveDisplacement(p.xz, 0.5, 1.2).y;
-  let wetTop = sea + 0.16 + 0.9 * max(hw, 0.0) + 0.5 * abs(hw);
-  let wet = (1.0 - smoothstep(wetTop - 0.30, wetTop + 0.10, p.y)) * mat.sandW;
-  var alb = mat.albedo * mix(1.0, 0.56, wet);
+  // wetness (swash zone): darkened, glossy, slightly redder sand up to the recent run-up level
+  let hw = waveDisplacement(pxz, 0.5, 1.2).y;
+  let wetTop = sea + 0.26 + 0.9 * max(hw, 0.0) + 0.5 * abs(hw);
+  let wet = (1.0 - smoothstep(wetTop - 0.42, wetTop + 0.08, ground)) * mat.sandW;
+  var alb = mat.albedo * mix(vec3<f32>(1.0), vec3<f32>(0.58, 0.54, 0.53), wet);
+  // wrack line: seaweed, twigs and shell hash left at the highest recent swash
+  let wn = vnoise4(pxz * vec2<f32>(0.55, 0.9));
+  let wrack = (1.0 - smoothstep(0.0, 0.10, abs(ground - (sea + 0.46 + 0.10 * (wn.r - 0.5))))) * smoothstep(0.50, 0.78, wn.g) * mat.sandW * (1.0 - smoothstep(60.0, 400.0, dist));
+  alb = mix(alb, vec3<f32>(0.075, 0.055, 0.035) * (0.7 + 0.6 * wn.b), wrack * 0.50);
 
   let L = G.sunDir.xyz;
-  let ndl = max(dot(n, L), 0.0);
+  let wrap = 0.35 * mat.canopy;                              // leaves transmit: wrapped diffuse on foliage
+  let ndl = max((dot(n, L) + wrap) / (1.0 + wrap), 0.0);
   var sh = 1.0;
-  if (withShadow && ndl > 0.0) { sh = sunShadow(p + n * 0.4, jit * 1.2); }
+  if (withShadow && ndl > 0.0) { sh = sunShadow(vec3<f32>(pxz.x, max(p.y, ground), pxz.y) + n * 0.4, jit * 1.2); }
   let ao = clamp(1.0 - 0.055 * max(aux.y, 0.0) + 0.02 * min(aux.y, 0.0), 0.35, 1.05) * (0.75 + 0.25 * clamp(n.y, 0.0, 1.0)) * mat.occ;
   let Eamb = G.skyE.rgb * (0.5 + 0.5 * n.y) * ao + G.sunE.rgb * (L.y * 0.06 * (0.5 - 0.5 * n.y));
-  sh *= 0.35 + 0.65 * mat.occ;
+  sh *= 0.5 + 0.5 * mat.occ;
   var col = alb / PI * (G.sunE.rgb * ndl * sh + Eamb);
   // glossy wet film reflecting the sky
   let R = reflect(-V, n);
@@ -200,6 +260,11 @@ fn shadeLand(p : vec3<f32>, V : vec3<f32>, dist : f32, withShadow : bool, jit : 
   let toCam = G.camPos.xyz - p;
   let dist = length(toCam);
   if (p.y < seaLevel() - 0.6) { return vec4<f32>(0.020, 0.050, 0.060, 1.0); } // submerged: covered by the water pass
+  if (G.tint.x > 6.5 && G.tint.x < 7.5) {   // diagnostics: (sand, rock, foliage cover)
+    let nG = terrainNormal(p.xz, max(4.0, dist * 0.004)); let cls = landClass(p.xz, nG, auxAt(p.xz), dist);
+    let mt = landMaterial(p.xz, nG, toCam / dist, dist, cls);
+    return vec4<f32>(mt.sandW, mt.rockW, mt.canopy, 1.0);
+  }
   let jit = hash21(in.pos.xy);
   var col = shadeLand(p, toCam / dist, dist, true, jit);
   col = applyFog(col, dist);
