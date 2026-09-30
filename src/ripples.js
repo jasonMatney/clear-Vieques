@@ -110,6 +110,7 @@ fn main(@builtin(global_invocation_id) id : vec3<u32>) {
     constructor(gpu, terrain) {
       this.gpu = gpu; this.terrain = terrain; this.NR = NR; this.cell = 0.08;  this.size = NR * this.cell;
       this.center = [0, 0]; this.pending = []; this.enabled = true; this.forceClear = false; this.oldOrigin = null;
+      this.activeFrames = 0;   // frames left before the sim is considered settled (12 s of damping leaves < 1 mm) and is skipped entirely
       this.params = { cMax: 1.5, damping: 0.42, agitDecay: 1.3, gain: 2.4 };
       this.cur = 0;
       this.ready = this.init();
@@ -144,10 +145,13 @@ fn main(@builtin(global_invocation_id) id : vec3<u32>) {
       const c = this.center, h = this.size * 0.34;
       if (Math.abs(x - c[0]) > h || Math.abs(z - c[1]) > h) { this.center = [x, z]; this.forceClear = true; }
       if (this.pending.length < MAX_IMP) this.pending.push([x, z, radius, strength]);
+      this.activeFrames = 720;
     }
     // Records sim steps. 'focus' is a point the window should follow (a spot ahead of the camera).
     encode(encoder, dt, focus, seaLevel) {
       if (!this.enabled) return;
+      if (this.activeFrames <= 0 && !this.pending.length && !this.forceClear) return;   // settled: nothing to step, nothing to sample
+      this.activeFrames--;
       const cs = this.cell;
       if (!this.forceClear && focus) {
         const c = this.center;
@@ -189,6 +193,6 @@ fn main(@builtin(global_invocation_id) id : vec3<u32>) {
       buf.unmap(); buf.destroy();
       return { maxH, maxAg, activeCells: n, meanAbs: n ? sumAbs / n : 0, center: this.center, enabled: this.enabled };
     }
-    uniforms() { return [this.center[0], this.center[1], this.size, this.enabled ? this.params.gain : 0]; }
+    uniforms() { return [this.center[0], this.center[1], this.size, this.enabled && this.activeFrames > 0 ? this.params.gain : 0]; }
   };
 })();

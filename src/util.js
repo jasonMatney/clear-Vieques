@@ -66,6 +66,24 @@
   };
   CV.m4 = m4;
 
+  // Frustum side planes + near plane from a column-major view-projection matrix (WebGPU clip volume: -w<=x,y<=w, 0<=z<=w; reverse-Z is fine, only
+  // the near plane differs and it is not used for culling). Planes are unnormalised (sign tests only): [a, b, c, d] with a*x+b*y+c*z+d >= 0 inside.
+  CV.frustumPlanes = function (m) {
+    const row = (r) => [m[r], m[4 + r], m[8 + r], m[12 + r]];
+    const r0 = row(0), r1 = row(1), r3 = row(3);
+    const add = (a, b) => a.map((v, i) => v + b[i]), sub = (a, b) => a.map((v, i) => v - b[i]);
+    return [add(r3, r0), sub(r3, r0), add(r3, r1), sub(r3, r1)];
+  };
+  // box = { x0, x1, y0, y1, z0, z1 }; true when the box is (at least partly) inside all planes
+  CV.boxInFrustum = function (pl, b) {
+    for (let i = 0; i < 4; i++) {
+      const q = pl[i];
+      const x = q[0] >= 0 ? b.x1 : b.x0, y = q[1] >= 0 ? b.y1 : b.y0, z = q[2] >= 0 ? b.z1 : b.z0;
+      if (q[0] * x + q[1] * y + q[2] * z + q[3] < 0) return false;
+    }
+    return true;
+  };
+
   // ---------------------------------------------------------------- uniform block (vec4 / mat4 fields only => no padding traps)
   CV.UniformBlock = class UniformBlock {
     constructor(fields) {

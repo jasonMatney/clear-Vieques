@@ -71,10 +71,13 @@ struct COut { @builtin(position) pos : vec4<f32>, @location(0) inten : f32 };
       this.gpu = gpu; this.sceneLayout = sceneLayout;
       this.M = 2048;        // splat resolution (mip 1 is the sampled base -> 4 coverage samples per texel)
       this.NPMAX = 1120;    // photon texture is sized for the highest tier
-      this.NP = 840;        // photon cells per side (quality tier)
+      this.NP = 720;        // photon cells per side (quality tier)
       this.size = 28;       // map window (m)
       this.overscan = 1.3;  // photon window / map window
       this.origin = [0, 0]; this.enabled = true; this.intensity = 1.0;
+      this.hi = false;      // true: splat into the full 2048^2 level 0 and box-filter down; false: splat straight into the 1024^2 level 1 (the level the shader samples)
+      this.every = 1;       // refresh the map every n-th frame (the pattern drifts slowly, so 30 Hz is indistinguishable from 60 Hz)
+      this.tick = 0; this.active = false; this.cur = null;
       this.ready = this.init();
     }
     async init() {
@@ -82,7 +85,8 @@ struct COut { @builtin(position) pos : vec4<f32>, @location(0) inten : f32 };
       this.tex = dev.createTexture({ label: 'causticMap', size: [M, M, 1], format: 'rgba16float', mipLevelCount: CV.mipCount(M, M),
         usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.RENDER_ATTACHMENT });
       this.sceneView = this.tex.createView({ dimension: '2d' });
-      this.rtView = this.tex.createView({ dimension: '2d', baseMipLevel: 0, mipLevelCount: 1 });
+      this.rtViewHi = this.tex.createView({ dimension: '2d', baseMipLevel: 0, mipLevelCount: 1 });
+      this.rtViewLo = this.tex.createView({ dimension: '2d', baseMipLevel: 1, mipLevelCount: 1 });
       this.photonTex = dev.createTexture({ label: 'photons', size: [NP + 1, NP + 1], format: 'rgba32float', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING });
       const pLayout = dev.createBindGroupLayout({ entries: [
         { binding: 0, visibility: GPUShaderStage.COMPUTE, buffer: { type: 'uniform' } },
@@ -108,10 +112,13 @@ struct COut { @builtin(position) pos : vec4<f32>, @location(0) inten : f32 };
     }
     attachMip(mip) { this.mip = mip; this.mipPasses = mip.makePasses(this.tex, this.M, this.M, 1); }
 
-    // Place the map window and record the caustic passes. sunDir = unit vector toward the sun. focus = [x, z] centre of interest.
-    encode(encoder, focus, meanDepth, sunDir) {
-      if (!this.enabled || !this.mipPasses) return;
-      const gpu = this.gpu, W = this.size, M = this.M, NP = this.NP;
+    // Chooses whether this frame refreshes the map and where its window sits. Runs BEFORE the frame's globals are written: the shader must look
+    // the map up with the origin it was rendered with (the old order used the previous frame's origin, which on frame 0 is (0,0) = flat caustics).
+    // sunDir = unit vector toward the sun. focus = [x, z] centre of interest.
+    place(focus, meanDepth, sunDir) {
+      this.active = !!(this.enabled && this.mipPasses) && (this.tick++ % this.every === 0);
+      if (!this.active) return;
+      const W = this.size, M = this.M, NP = this.NP;
       const texel = W / M, snapMap = texel * 16;
       const mc = [Math.round(focus[0] / snapMap) * snapMap, Math.round(focus[1] / snapMap) * snapMap];
       this.origin = mc;
@@ -122,7 +129,13 @@ struct COut { @builtin(position) pos : vec4<f32>, @location(0) inten : f32 };
       const PW = W * this.overscan, spacing = PW / NP;
       const pc = [mc[0] - travel[0], mc[1] - travel[1]];
       const po = [Math.round((pc[0] - PW / 2) / spacing) * spacing, Math.round((pc[1] - PW / 2) / spacing) * spacing];
-      const mapOrigin = [mc[0] - W / 2, mc[1] - W / 2];
+      this.cur = { po, spacing, NP, mapOrigin: [mc[0] - W / 2, mc[1] - W / 2] };
+    }
+
+    // Records the caustic passes for a frame that place() marked active.
+    encode(encoder) {
+      if (!this.active) return;
+      const gpu = this.gpu, W = this.size, { po, spacing, NP, mapOrigin } = this.cur;
       gpu.queue.writeBuffer(this.uPhoton, 0, new Float32Array([po[0], po[1], spacing, NP, 0, 0, 0, 0]));
       gpu.queue.writeBuffer(this.uSplat, 0, new Float32Array([spacing, NP, mapOrigin[0], mapOrigin[1], W, 40, 0, 0]));
       // 1) photons (needs the scene bind group: waves, DEM)
@@ -130,17 +143,17 @@ struct COut { @builtin(position) pos : vec4<f32>, @location(0) inten : f32 };
       cp.setPipeline(this.pPhoton); cp.setBindGroup(0, this.sceneBG); cp.setBindGroup(1, this.bgPhoton);
       cp.dispatchWorkgroups(Math.ceil((NP + 1) / 8), Math.ceil((NP + 1) / 8), 1);
       cp.end();
-      // 2) splat
-      const rp = encoder.beginRenderPass({ label: 'causticSplat', timestampWrites: CV.tw('splat'), colorAttachments: [{ view: this.rtView, loadOp: 'clear', clearValue: [0, 0, 0, 0], storeOp: 'store' }] });
+      // 2) splat (into level 0, or straight into level 1 on the cheaper tiers)
+      const rp = encoder.beginRenderPass({ label: 'causticSplat', timestampWrites: CV.tw('splat'), colorAttachments: [{ view: this.hi ? this.rtViewHi : this.rtViewLo, loadOp: 'clear', clearValue: [0, 0, 0, 0], storeOp: 'store' }] });
       rp.setPipeline(this.pSplat); rp.setBindGroup(0, this.bgSplat); rp.draw(NP * NP * 2 * 3);
       rp.end();
-      // 3) mips
+      // 3) mips (level 1 is already the render target on the cheaper tiers)
       const mp = encoder.beginComputePass({ label: 'causticMips', timestampWrites: CV.tw('causticMips') });
-      this.mip.encode(mp, this.mipPasses);
+      this.mip.encode(mp, this.hi ? this.mipPasses : this.mipPasses.slice(1));
       mp.end();
     }
     uniforms() { // caustic: origin x, z, size, intensity ; causticB: texel, max lod, fade start, fade end
-      return { a: [this.origin[0], this.origin[1], this.size, this.enabled ? this.intensity : 0], b: [2 * this.size / this.M, Math.log2(this.M) - 3, 20, 34] };
+      return { a: [this.origin[0], this.origin[1], this.size, this.enabled && this.cur ? this.intensity : 0], b: [2 * this.size / this.M, Math.log2(this.M) - 3, 20, 34] };
     }
   };
 })();

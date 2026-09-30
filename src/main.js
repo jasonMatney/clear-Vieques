@@ -47,9 +47,11 @@
     ui.loadMsg('Compiling optics…');
     const renderer = app.renderer = new CV.Renderer(gpu, terrain, sky, waves, ripples, caustics, mip, sceneLayout);
     await renderer.ready;
+    if (params.has('quality')) app.quality = CV.clamp(parseInt(params.get('quality')) || 0, 0, 2);
+    applyTier(app.quality);
     if (params.has('msaa')) renderer.setSamples(parseInt(params.get('msaa')) || 1);
     if (params.has('scale')) { renderer.scale = parseFloat(params.get('scale')); app.fixedScale = true; }
-    else renderer.scale = (window.devicePixelRatio || 1) > 1.5 ? 0.6 : 0.85;
+    else setRung((window.devicePixelRatio || 1) > 1.5 ? 2 : 4);
     if (params.has('debug')) renderer.debugView = parseInt(params.get('debug')) || 0;
     if (params.get('ui') === '0') { document.body.classList.add('hidden'); $('hide').textContent = 'Show controls ↗'; }
     if (params.has('t')) app.fixedTime = parseFloat(params.get('t')) || 0;   // freeze the wave clock (reproducible frames)
@@ -118,10 +120,27 @@
     if (canvas.width !== w || canvas.height !== h) { canvas.width = w; canvas.height = h; }
   }
 
-  // Quality tiers shed fixed per-frame cost: 0 = 560 photons/side, no MSAA; 1 = 840, MSAA 4x; 2 = 1120, MSAA 4x.
+  // Quality tiers shed fixed per-frame cost (the caustic map dominates it). hi = splat into the 2048^2 level and filter down; every = refresh interval.
+  const TIERS = [
+    { NP: 480, hi: false, every: 2, msaa: 1 },
+    { NP: 720, hi: false, every: 1, msaa: 1 },
+    { NP: 1120, hi: true, every: 1, msaa: 4 },   // MSAA only pays off when the internal resolution is close to native
+  ];
+  // Adaptive-resolution ladder: [tier, render scale]. One rung per step keeps texture re-creation rare; the edge-adaptive upscaler hides the low rungs.
+  const LADDER = [[0, 0.40], [0, 0.50], [0, 0.60], [0, 0.70], [1, 0.70], [1, 0.80], [1, 0.90], [2, 0.90], [2, 1.00]];
+  function setRung(i) {
+    i = CV.clamp(i, 0, LADDER.length - 1); app.rung = i;
+    const [q, sc] = LADDER[i];
+    if (q !== app.quality) { app.quality = q; applyTier(q); }
+    app.renderer.scale = sc; hist.length = 0;
+    const t = app.renderer.timer; t.samples = 0; t.avg = 0;
+  }
+  function applyTier(q) {
+    const t = TIERS[q], c = app.caustics;
+    c.NP = t.NP; c.hi = t.hi; c.every = t.every; c.tick = 0; app.renderer.setSamples(t.msaa); hist.length = 0;
+  }
   function setQuality(q) {
-    q = CV.clamp(q, 0, 2); if (q === app.quality) return; app.quality = q;
-    app.caustics.NP = [560, 840, 1120][q]; app.renderer.setSamples(q === 0 ? 1 : 4); hist.length = 0;
+    q = CV.clamp(q, 0, TIERS.length - 1); if (q === app.quality) return; app.quality = q; applyTier(q);
   }
   app.setQuality = setQuality;
 
@@ -142,7 +161,7 @@
   }
 
   // ------------------------------------------------------------------------------------------------ loop
-  let last = performance.now(), frameN = 0; const hist = [];
+  let last = performance.now(), frameN = 0, underRun = 0, lastRungChange = 0; const hist = [], bad = {};
   function loop(now) {
     requestAnimationFrame(loop);
     const dtRaw = (now - last) / 1000; last = now;
@@ -154,19 +173,19 @@
     const state = buildState(app.paused ? 0 : dt, canvas.width, canvas.height);
     try { app.renderer.frame(state, gpu.ctx.getCurrentTexture().createView(), canvas.width, canvas.height); }
     catch (e) { CV.log.error('frame:', e); return; }
-    // adaptive resolution: keep GPU time near ~9 ms (headroom for 60 fps; frame time alone is vsync-quantised and can't show headroom)
     hist.push(dtRaw * 1000); if (hist.length > 60) hist.shift();
     frameN++;
-    if (frameN % 40 === 0 && !app.fixedScale) {
+    // adaptive resolution: walk the ladder to keep GPU time under ~13.5 ms (headroom for 60 fps; raw frame time is vsync-quantised and can't show headroom)
+    if (frameN % 30 === 0 && !app.fixedScale && frameN > 90) {
       const r = app.renderer, gt = r.timer.enabled && r.timer.samples > 10 ? r.timer.avg : null;
-      const s = [...hist].sort((a, b) => a - b), med = s[s.length >> 1];
-      const over = gt !== null ? gt > 13.5 : med > 20.5, under = gt !== null ? gt < 9.5 : med < 14.6;   // ~60 fps needs GPU work <~14 ms
+      const s = [...hist].sort((a, b) => a - b), med = s[s.length >> 1] || 16.7, tnow = performance.now();
+      const over = (gt !== null && gt > 13.5) || med > 19, under = (gt !== null ? gt < 8.5 : med < 14.6) && med < 15.5;
       if (over) {
-        if (r.scale > 0.46) r.scale = Math.max(0.42, r.scale * (gt !== null ? Math.max(0.8, Math.sqrt(12.0 / gt)) : 0.88));
-        else setQuality(app.quality - 1);               // resolution floor reached: shed fixed per-frame cost instead
+        underRun = 0;
+        if (tnow - lastRungChange > 700 && app.rung > 0) { bad[app.rung] = tnow; setRung(app.rung - (gt !== null && gt > 24 ? 2 : 1)); lastRungChange = tnow; }
       } else if (under) {
-        if (r.scale < 1.0) r.scale = Math.min(1.0, r.scale * 1.06); else setQuality(app.quality + 1);
-      }
+        if (++underRun >= 6 && app.rung < LADDER.length - 1 && !(bad[app.rung + 1] && tnow - bad[app.rung + 1] < 25000)) { setRung(app.rung + 1); lastRungChange = tnow; underRun = 0; }
+      } else underRun = 0;
     }
     if (frameN % 15 === 0) {
       const s = [...hist].sort((a, b) => a - b), med = s[s.length >> 1];
@@ -178,7 +197,7 @@
         pos = ` · ${CV.fmtLat(lat)} ${CV.fmtLon(lon)} · ${(c[1] - (app.terrain.seaLevel + app.p.seaOffset)).toFixed(1)} m`;
       }
       const gt = app.renderer.timer.enabled && app.renderer.timer.samples > 10 ? ` · gpu ${app.renderer.timer.avg.toFixed(1)} ms` : '';
-      ui.hud(`${Math.round(app.stats.fps)} fps${gt} · ${app.renderer.width}×${app.renderer.height} · scale ${app.renderer.scale.toFixed(2)}${pos}`);
+      ui.hud(`${Math.round(app.stats.fps)} fps${gt} · ${app.renderer.width}×${app.renderer.height} · scale ${app.renderer.scale.toFixed(2)} · tier ${app.quality}${pos}`);
     }
   }
 

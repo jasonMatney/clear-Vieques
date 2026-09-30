@@ -21,7 +21,7 @@ struct WaveU {
   casc1 : vec4<f32>,
   casc2 : vec4<f32>,
   wind : vec4<f32>,    // alpha, wp, gamma, dir (rad, direction of travel: atan2(dz,dx))
-  windB : vec4<f32>,   // spread s, dirNorm, -, -
+  windB : vec4<f32>,   // spread s at the peak, spread s at high k, peak wavenumber kp, -
   swell : vec4<f32>,
   swellB : vec4<f32>,
 };
@@ -64,6 +64,13 @@ fn dirSpread(theta : f32, dir : f32, s : f32, norm : f32) -> f32 {
   let dd = atan2(sin(d), cos(d));
   return norm * pow(max(cos(0.5 * dd), 0.0), 2.0 * s);
 }
+// Wind-sea spreading widens with wavenumber (Elfouhaily et al. 1997): long waves stay wind-aligned, wavelets a few times shorter than the
+// peak are nearly isotropic. s falls from windB.x at k <= 2 kp to windB.y at k >= 16 kp; the cos^2s lobe is normalised by Gamma(s+1)/(2 sqrt(pi) Gamma(s+1/2)) ~ sqrt(s+1/4)/(2 sqrt(pi)).
+fn windSpread(theta : f32, dir : f32, k : f32) -> f32 {
+  let t = clamp((log2(max(k, 1e-3) / max(U.windB.z, 1e-3)) - 1.0) / 3.0, 0.0, 1.0);
+  let s = mix(U.windB.x, U.windB.y, t * t * (3.0 - 2.0 * t));
+  return dirSpread(theta, dir, s, sqrt(s + 0.25) * 0.28209479);
+}
 
 @compute @workgroup_size(8, 8, 1)
 fn main(@builtin(global_invocation_id) id : vec3<u32>) {
@@ -82,7 +89,7 @@ fn main(@builtin(global_invocation_id) id : vec3<u32>) {
     let w = dispersion(k, U.a.z);
     let cg = groupVel(k, U.a.z);
     var psi = 0.0;
-    psi += jonswap(w, U.wind.x, U.wind.y, U.wind.z) * dirSpread(theta, U.wind.w, U.windB.x, U.windB.y);
+    psi += jonswap(w, U.wind.x, U.wind.y, U.wind.z) * windSpread(theta, U.wind.w, k);
     psi += jonswap(w, U.swell.x, U.swell.y, U.swell.z) * dirSpread(theta, U.swell.w, U.swellB.x, U.swellB.y);
     psi *= cg / k;
     // smooth band limits between cascades + Nyquist guard

@@ -241,6 +241,19 @@ fn kAbs() -> vec3<f32> { return G.kAbs.rgb; }
 // angular softness of reflected edges: wider with distance (unresolved ripple slope scatters the reflection vertically)
 fn footprintSoft(dist : f32) -> f32 { return 0.0016 * log2(1.0 + dist * 0.02); }
 
+// Smith masking/shadowing of the reflected ray for a Beckmann/GGX slope distribution with mean-square slope a2. A ray leaving the surface at
+// a low elevation is blocked by neighbouring waves with high probability; on a real sea it strikes a second facet and mostly escapes upward
+// with far less energy. Only the slope variance carried by the *resolved* geometry is used (the unresolved part already lowers the averaged
+// Fresnel term), so distant, fully filtered water is unaffected.
+fn smithG1(y : f32, a2 : f32) -> f32 {
+  let c2 = max(y * y, 1e-6);
+  return 2.0 / (1.0 + sqrt(1.0 + a2 * (1.0 - c2) / c2));
+}
+fn mssTotalAt(d : f32) -> f32 {
+  let e0 = waveEnvC(0, d); let e1 = waveEnvC(1, d);
+  return G.shore.x * e0 * e0 + G.shore.y * e1 * e1 + G.shore.z;
+}
+
 // Radiance seen in the reflection of terrain hit at q (cheap: no shadow march).
 fn reflectedLand(q : vec3<f32>, R : vec3<f32>, distTotal : f32) -> vec3<f32> {
   let c = shadeLand(q, -R, distTotal, false, 0.0);
@@ -262,26 +275,33 @@ fn reflectedLand(q : vec3<f32>, R : vec3<f32>, distTotal : f32) -> vec3<f32> {
   let footAlong = dist * G.camFwd.w / max(V.y, 0.03);          // along-view ground footprint of one pixel (m)
   let ws = waveSlopeAt(in.rest, dRest, footAlong);
   let rp = rippleAt(in.rest);
+  var N = normalize(vec3<f32>(-(ws.x + rp.y), 1.0, -(ws.y + rp.z)));
+  let ndv0 = dot(N, V);
+  if (ndv0 < 0.03) { N = normalize(N + V * (0.03 - ndv0)); }
+  let cosv = clamp(dot(N, V), 0.001, 1.0);
+  let F = clamp(fresnelAir(cosv) * avgFresnelScale(cosv, ws.w), 0.0, 1.0);
+  // Reflected ray. A facet tilted away from the viewer sends the ray below the horizon, where on a real sea it would strike the next
+  // wave and bounce again (mostly up into the sky). Mirroring such rays upward approximates that; the old "squash toward the horizon"
+  // pinned them exactly at the beach's angular height and drew beach-coloured bars across the shallows.
+  var R = reflect(-V, N);
+  R = normalize(vec3<f32>(R.x, abs(R.y) + 0.003, R.z));
+  // how fast the ray elevation changes between neighbouring pixels (uniform control flow: before the discard): an under-resolved wave field
+  // makes adjacent pixels pick unrelated facets, so widen the reflection's coverage ramp by the same amount instead of aliasing
+  let dRy = 0.5 * (abs(dpdx(R.y)) + abs(dpdy(R.y)));
   let H = P.y - bedH;                                   // vertical water depth at this point
   let alpha = smoothstep(0.0, 0.05, H);
   if (alpha <= 0.0) { discard; }
 
   let jit = hash21(in.pos.xy);
   let K = kAbs();
-  var N = normalize(vec3<f32>(-(ws.x + rp.y), 1.0, -(ws.y + rp.z)));
-  let ndv0 = dot(N, V);
-  if (ndv0 < 0.03) { N = normalize(N + V * (0.03 - ndv0)); }
-  let cosv = clamp(dot(N, V), 0.001, 1.0);
-  let F = clamp(fresnelAir(cosv) * avgFresnelScale(cosv, ws.w), 0.0, 1.0);
 
   // ---- reflection: sky, terrain (headlands / forest) and the sun
-  var R = reflect(-V, N);
-  if (R.y < 0.01) { R = normalize(vec3<f32>(R.x, 0.01 + abs(R.y) * 0.3, R.z)); }
   var Lrefl = skyWithClouds(R);
   // terrain reflections: rays steeper than ~9 deg can only meet land right beside the shore, so gate the (expensive) march by proximity
   let nearShore = 1.0 - smoothstep(25.0, 110.0, -auxAt(in.rest).x);
   if (R.y < mix(0.16, 0.6, nearShore)) {
-    let hit = marchLand(P + N * 0.03, R, 0.006 + footprintSoft(dist) + 2.0 * sqrt(0.5 * ws.w));   // + spread from the slope variance filtered out above
+    let softR = 0.006 + footprintSoft(dist) + 2.0 * sqrt(0.5 * ws.w) + 0.8 * dRy;
+    let hit = marchLand(P + N * 0.03, R, softR);   // + spread from the slope variance filtered out above
     if (hit.w > 0.0) { Lrefl = mix(Lrefl, reflectedLand(hit.xyz, R, dist + length(hit.xyz - P)), hit.w); }
   }
   // sun glitter: GGX lobe whose width follows the slope variance the mip chain removed
@@ -354,7 +374,8 @@ fn reflectedLand(q : vec3<f32>, R : vec3<f32>, distTotal : f32) -> vec3<f32> {
   foam = foam * foam * (3.0 - 2.0 * foam);
   let Lfoam = vec3<f32>(0.90, 0.92, 0.90) / PI * (G.sunE.rgb * max(dot(N, Ls), 0.0) * 0.9 + G.skyE.rgb * (0.5 + 0.5 * N.y));
 
-  var col = Lrefr + F * Lrefl + Lspec;
+  let Gr = smithG1(R.y, max(mssTotalAt(dRest) - ws.w, 0.0));
+  var col = Lrefr + F * Gr * Lrefl + Lspec;
   col = mix(col, Lfoam, foam * 0.92);
   col = applyFog(col, dist);
 
@@ -379,11 +400,18 @@ fn reflectedLand(q : vec3<f32>, R : vec3<f32>, distTotal : f32) -> vec3<f32> {
     return src.slice(b, c); // shadeLand only (materials already prepended by caller)
   };
 
-  // ------------------------------------------------------------------------------------------------ post (tone mapping)
+  // ------------------------------------------------------------------------------------------------ post (tone mapping + upscale)
+  // Two entry paths share one module:  fs = grade + dither straight to the canvas (native resolution);
+  //   fs_grade -> LDR texture at the internal resolution, then fs_up = edge-adaptive upscale to the canvas.
+  // fs_up estimates the local edge orientation from luma gradients (structure tensor over the 4 centre texels of a 4x4 neighbourhood) and
+  // filters with a Lanczos-2-like kernel squeezed across the edge and stretched along it, clamped to the local min/max (no ringing). Stair-steps in
+  // a low-resolution frame come out as straight edges, which is what lets the cheap tiers run without MSAA. The idea follows AMD FidelityFX FSR 1
+  // (EASU, MIT); the code here is our own compact variant.
   CV.wgsl.post = /* wgsl */`
 @group(0) @binding(0) var hdr : texture_2d<f32>;
 @group(0) @binding(1) var samP : sampler;
-@group(0) @binding(2) var<uniform> P : vec4<f32>;   // exposure, vignette, time, 0
+@group(0) @binding(2) var<uniform> PP : array<vec4<f32>, 2>;   // [0] exposure, vignette, time, saturation ; [1] raw-debug flag, source w, source h, -
+@group(0) @binding(3) var ldr : texture_2d<f32>;
 struct VOut { @builtin(position) pos : vec4<f32>, @location(0) uv : vec2<f32> };
 @vertex fn vs(@builtin(vertex_index) vid : u32) -> VOut {
   var p = array<vec2<f32>, 3>(vec2<f32>(-1.0, -1.0), vec2<f32>(3.0, -1.0), vec2<f32>(-1.0, 3.0));
@@ -406,16 +434,83 @@ fn toSrgb(c : vec3<f32>) -> vec3<f32> {
   let lo = c * 12.92; let hi = 1.055 * pow(max(c, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.4)) - 0.055;
   return select(hi, lo, c <= vec3<f32>(0.0031308));
 }
-@fragment fn fs(in : VOut) -> @location(0) vec4<f32> {
-  var c = textureSampleLevel(hdr, samP, in.uv, 0.0).rgb * P.x;
-  let q = in.uv - 0.5;
+fn grade(raw : vec3<f32>, uv : vec2<f32>) -> vec3<f32> {
+  let P = PP[0];
+  var c = raw * P.x;
+  let q = uv - 0.5;
   c *= 1.0 - P.y * dot(q, q) * 1.6;
   c = neutral(c);
-  var s = toSrgb(c);
-  s = mix(vec3<f32>(dot(s, vec3<f32>(0.2126, 0.7152, 0.0722))), s, P.w);   // gentle saturation lift (the neutral tone-mapper desaturates)
-  let n = fract(sin(dot(in.pos.xy, vec2<f32>(12.9898, 78.233)) + P.z) * 43758.5453);
-  s += (n - 0.5) / 255.0;
-  return vec4<f32>(s, 1.0);
+  let s = toSrgb(c);
+  return mix(vec3<f32>(dot(s, vec3<f32>(0.2126, 0.7152, 0.0722))), s, P.w);   // gentle saturation lift (the neutral tone-mapper desaturates)
+}
+fn dither(pos : vec2<f32>) -> f32 {
+  return (fract(sin(dot(pos, vec2<f32>(12.9898, 78.233)) + PP[0].z) * 43758.5453) - 0.5) / 255.0;
+}
+@fragment fn fs(in : VOut) -> @location(0) vec4<f32> {   // native resolution: grade + dither to the canvas
+  let raw = textureSampleLevel(hdr, samP, in.uv, 0.0).rgb;
+  if (PP[1].x > 0.5) { return vec4<f32>(clamp(raw, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0); }   // diagnostics: linear values straight to the framebuffer
+  return vec4<f32>(grade(raw, in.uv) + dither(in.pos.xy), 1.0);
+}
+@fragment fn fs_grade(in : VOut) -> @location(0) vec4<f32> {   // internal resolution: grade into the LDR texture
+  let raw = textureSampleLevel(hdr, samP, in.uv, 0.0).rgb;
+  if (PP[1].x > 0.5) { return vec4<f32>(clamp(raw, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0); }
+  return vec4<f32>(grade(raw, in.uv), 1.0);
+}
+
+// windowed-sinc (a = 2) as a polynomial in the squared distance; valid for d2 in [0, 4]
+fn kern(d2 : f32) -> f32 {
+  let a = 0.4 * d2 - 1.0; let b = 0.25 * d2 - 1.0;
+  return 1.5625 * a * a - 0.5625 * b * b;
+}
+fn lumaOf(c : vec3<f32>) -> f32 { return dot(c, vec3<f32>(0.299, 0.587, 0.114)); }
+
+@fragment fn fs_up(in : VOut) -> @location(0) vec4<f32> {
+  let dims = vec2<f32>(PP[1].y, PP[1].z);
+  let hi = vec2<i32>(dims) - vec2<i32>(1);
+  let p = in.uv * dims - vec2<f32>(0.5);
+  let ip = vec2<i32>(floor(p));
+  let fp = p - floor(p);
+  var col : array<vec3<f32>, 16>;
+  var lum : array<f32, 16>;
+  for (var j = 0; j < 4; j++) {
+    for (var i = 0; i < 4; i++) {
+      let c = textureLoad(ldr, clamp(ip + vec2<i32>(i - 1, j - 1), vec2<i32>(0), hi), 0).rgb;
+      col[j * 4 + i] = c; lum[j * 4 + i] = lumaOf(c);
+    }
+  }
+  // luma gradients at the four centre texels, blended bilinearly to the sample point -> structure tensor
+  let gxf = lum[6] - lum[4];  let gyf = lum[9] - lum[1];
+  let gxg = lum[7] - lum[5];  let gyg = lum[10] - lum[2];
+  let gxj = lum[10] - lum[8]; let gyj = lum[13] - lum[5];
+  let gxk = lum[11] - lum[9]; let gyk = lum[14] - lum[6];
+  let wf = (1.0 - fp.x) * (1.0 - fp.y); let wg = fp.x * (1.0 - fp.y); let wj = (1.0 - fp.x) * fp.y; let wk = fp.x * fp.y;
+  let jxx = wf * gxf * gxf + wg * gxg * gxg + wj * gxj * gxj + wk * gxk * gxk;
+  let jyy = wf * gyf * gyf + wg * gyg * gyg + wj * gyj * gyj + wk * gyk * gyk;
+  let jxy = wf * gxf * gyf + wg * gxg * gyg + wj * gxj * gyj + wk * gxk * gyk;
+  let tr = jxx + jyy;
+  let disc = sqrt(max((jxx - jyy) * (jxx - jyy) + 4.0 * jxy * jxy, 0.0));
+  let lam1 = 0.5 * (tr + disc);
+  let aniso = disc / max(tr, 1e-6);                        // 0 = isotropic, 1 = a clean straight edge
+  let theta = 0.5 * atan2(2.0 * jxy, jxx - jyy);           // direction of the strongest gradient (across the edge)
+  let across = vec2<f32>(cos(theta), sin(theta));
+  let along = vec2<f32>(-across.y, across.x);
+  let edge = smoothstep(0.0004, 0.01, lam1) * aniso;       // only reshape the kernel where a real edge exists
+  let sa = 1.0 - 0.45 * edge;                              // < 1: kernel reaches further along the edge
+  let sc = 1.0 + 0.40 * edge;                              // > 1: kernel is narrower across it
+  var acc = vec3<f32>(0.0); var wsum = 0.0;
+  for (var j = 0; j < 4; j++) {
+    for (var i = 0; i < 4; i++) {
+      let v = vec2<f32>(f32(i - 1), f32(j - 1)) - fp;
+      let a = dot(v, along) * sa; let c = dot(v, across) * sc;
+      let d2 = a * a + c * c;
+      if (d2 < 4.0) { let w = kern(d2); acc += col[j * 4 + i] * w; wsum += w; }
+    }
+  }
+  var o = acc / max(wsum, 1e-4);
+  let mn = min(min(col[5], col[6]), min(col[9], col[10]));
+  let mx = max(max(col[5], col[6]), max(col[9], col[10]));
+  o = clamp(o, mn, mx);
+  return vec4<f32>(o + dither(in.pos.xy), 1.0);
 }
 `;
 })();

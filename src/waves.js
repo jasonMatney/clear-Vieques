@@ -3,6 +3,7 @@
   'use strict';
   const CV = window.CV;
   const N = 256, CASCADES = 3, GRAV = 9.81;
+  const WIND_S_PEAK = 4, WIND_S_HIGH = 1.3;   // wind-sea directional spread: cos^2s lobe, s = 4 at the peak widening to ~1.3 for wavelets (see waveInit)
   const T_LOOP = 256; // s — quantised dispersion makes the pattern loop exactly (no float32 phase drift)
 
   function dirNorm(s) {
@@ -91,7 +92,7 @@
       d.set([this.L[1], this.kb[0], this.kb[1], 23], 12);
       d.set([this.L[2], this.kb[1], 1e9, 37], 16);
       d.set([alphaW, wpW, 3.3, CV.Waves.travelAngle(p.windDirDeg)], 20);
-      d.set([4, dirNorm(4), 0, 0], 24);
+      d.set([WIND_S_PEAK, WIND_S_HIGH, wpW * wpW / GRAV, 0], 24);
       d.set([alphaS, wpS, gS, CV.Waves.travelAngle(p.swellDirDeg)], 28);
       d.set([30, dirNorm(30), 0, 0], 32);
       return d;
@@ -106,9 +107,10 @@
       const hsS = 0.04 + 0.28 * E, wpS = 2 * Math.PI / 7.5, aS = (hsS / 4) ** 2 / jonswapM0(wpS, 6);
       const disp = (k) => Math.sqrt(GRAV * k * Math.tanh(Math.min(k * p.depth, 40)) * (1 + (k / 363) ** 2));
       const jon = (w, a, wp, g) => { if (w < 1e-3) return 0; const sg = w <= wp ? 0.07 : 0.09, r = Math.exp(-((w - wp) ** 2) / (2 * sg * sg * wp * wp)); return a * GRAV * GRAV * Math.pow(w, -5) * Math.exp(-1.25 * Math.pow(wp / w, 4)) * Math.pow(g, r); };
-      const dirW = CV.Waves.travelAngle(p.windDirDeg), dirS = CV.Waves.travelAngle(p.swellDirDeg), nW = dirNorm(4), nS = dirNorm(30);
+      const dirW = CV.Waves.travelAngle(p.windDirDeg), dirS = CV.Waves.travelAngle(p.swellDirDeg), nS = dirNorm(30), kp = wpW * wpW / GRAV;
       const spread = (th, d, s, n) => { const x = th - d, dd = Math.atan2(Math.sin(x), Math.cos(x)); return n * Math.pow(Math.max(Math.cos(0.5 * dd), 0), 2 * s); };
       const sm = (a, b, x) => { const t = CV.clamp((x - a) / (b - a), 0, 1); return t * t * (3 - 2 * t); };
+      const windSpread = (th, k) => { const t = CV.clamp((Math.log2(Math.max(k, 1e-3) / Math.max(kp, 1e-3)) - 1) / 3, 0, 1), s = CV.mix(WIND_S_PEAK, WIND_S_HIGH, t * t * (3 - 2 * t)); return spread(th, dirW, s, Math.sqrt(s + 0.25) * 0.28209479); };
       const out = [];
       for (let c = 0; c < 3; c++) {
         const L = this.L[c], kLo = c === 0 ? 0 : this.kb[c - 1], kHi = c === 2 ? 1e9 : this.kb[c], dk = 2 * Math.PI / L, kn = Math.PI * N / L;
@@ -118,7 +120,7 @@
           if (nx === -N / 2 || nz === -N / 2 || (nx === 0 && nz === 0)) continue;
           const kx = nx * dk, kz = nz * dk, k = Math.hypot(kx, kz), th = Math.atan2(kz, kx), w = disp(k);
           const e = k * 0.002 + 1e-5, cg = (disp(k + e) - disp(Math.max(k - e, 1e-6))) / (2 * e);
-          let psi = (jon(w, alphaW, wpW, 3.3) * spread(th, dirW, 4, nW) + jon(w, aS, wpS, 6) * spread(th, dirS, 30, nS)) * cg / k;
+          let psi = (jon(w, alphaW, wpW, 3.3) * windSpread(th, k) + jon(w, aS, wpS, 6) * spread(th, dirS, 30, nS)) * cg / k;
           let win = 1; if (kLo > 0) win *= sm(kLo * 0.85, kLo * 1.15, k); if (kHi < 1e8) win *= 1 - sm(kHi * 0.85, kHi * 1.15, k);
           win *= 1 - sm(0.72 * kn, 0.94 * kn, Math.max(Math.abs(kx), Math.abs(kz)));
           psi *= win; varH += psi * dk * dk * stride * stride; mss += k * k * psi * dk * dk * stride * stride;

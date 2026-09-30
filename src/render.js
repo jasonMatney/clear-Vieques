@@ -94,7 +94,10 @@
         { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
         { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
         { binding: 2, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } }] });
-      this.pBuf = CV.buffer(gpu, 16, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, 'postU');
+      this.upBGL = dev.createBindGroupLayout({ entries: [
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+        { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } }] });
+      this.pBuf = CV.buffer(gpu, 32, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, 'postU');
       this.buildPipelines();
     }
 
@@ -114,21 +117,32 @@
           color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
           alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' } } }] }, multisample: ms,
         primitive: { topology: 'triangle-list', cullMode: 'none' }, depthStencil: { ...depth, depthWriteEnabled: true } });
-      this.pPost = dev.createRenderPipeline({ label: 'post', layout: dev.createPipelineLayout({ bindGroupLayouts: [this.postBGL] }),
+      const postLay = dev.createPipelineLayout({ bindGroupLayouts: [this.postBGL] });
+      this.pPost = dev.createRenderPipeline({ label: 'post', layout: postLay,
         vertex: { module: mPost, entryPoint: 'vs' }, fragment: { module: mPost, entryPoint: 'fs', targets: [{ format: this.gpu.format }] } });
+      this.pGrade = dev.createRenderPipeline({ label: 'grade', layout: postLay,
+        vertex: { module: mPost, entryPoint: 'vs' }, fragment: { module: mPost, entryPoint: 'fs_grade', targets: [{ format: 'rgba8unorm' }] } });
+      this.pUp = dev.createRenderPipeline({ label: 'upscale', layout: dev.createPipelineLayout({ bindGroupLayouts: [this.upBGL] }),
+        vertex: { module: mPost, entryPoint: 'vs' }, fragment: { module: mPost, entryPoint: 'fs_up', targets: [{ format: this.gpu.format }] } });
     }
 
-    resize(w, h) { // w,h = internal render size in pixels
+    // w,h = internal render size in pixels; tw,th = size of the final image. When they differ the frame is graded into an LDR texture
+    // at the internal size and upscaled edge-adaptively (see CV.wgsl.post); otherwise it is graded straight to the target.
+    resize(w, h, tw, th) {
       w = Math.max(64, Math.floor(w)); h = Math.max(64, Math.floor(h));
-      if (w === this.width && h === this.height && this.hdr) return;
-      const dev = this.gpu.device; this.width = w; this.height = h;
-      for (const t of [this.hdr, this.hdrMS, this.depth]) if (t) t.destroy();
+      const up = w < Math.floor(tw) || h < Math.floor(th);
+      if (w === this.width && h === this.height && this.hdr && up === this.upscale) return;
+      const dev = this.gpu.device; this.width = w; this.height = h; this.upscale = up;
+      for (const t of [this.hdr, this.hdrMS, this.depth, this.ldr]) if (t) t.destroy();
       const RA = GPUTextureUsage.RENDER_ATTACHMENT;
       this.hdr = dev.createTexture({ label: 'hdr', size: [w, h], format: 'rgba16float', usage: RA | GPUTextureUsage.TEXTURE_BINDING });
       this.hdrMS = this.sampleCount > 1 ? dev.createTexture({ label: 'hdrMS', size: [w, h], format: 'rgba16float', sampleCount: this.sampleCount, usage: RA }) : null;
       this.depth = dev.createTexture({ label: 'depth', size: [w, h], format: 'depth32float', sampleCount: this.sampleCount, usage: RA });
+      this.ldr = up ? dev.createTexture({ label: 'ldr', size: [w, h], format: 'rgba8unorm', usage: RA | GPUTextureUsage.TEXTURE_BINDING }) : null;
       this.hdrView = this.hdr.createView(); this.hdrMSView = this.hdrMS && this.hdrMS.createView(); this.depthView = this.depth.createView();
+      this.ldrView = this.ldr && this.ldr.createView();
       this.postBG = dev.createBindGroup({ layout: this.postBGL, entries: [{ binding: 0, resource: this.hdrView }, { binding: 1, resource: this.samPost }, { binding: 2, resource: { buffer: this.pBuf } }] });
+      this.upBG = up ? dev.createBindGroup({ layout: this.upBGL, entries: [{ binding: 2, resource: { buffer: this.pBuf } }, { binding: 3, resource: this.ldrView }] }) : null;
     }
 
     setSamples(n) { if (n === this.sampleCount) return; this.sampleCount = n; this.width = 0; this.buildPipelines(); }
@@ -163,7 +177,7 @@
       const cu = this.caustics.uniforms(); G.set('caustic', ...cu.a); G.set('causticB', ...cu.b);
       const mss = this.waves.mss(); G.set('shore', mss[0], mss[1], mss[2], 0);
       G.set('misc', s.quality || 1, s.night ? 1 : 0, s.moon || 0, 0);
-      G.set('tint', this.debugView, s.cloudCover === undefined ? 0.36 : s.cloudCover, this.opticsTest ? 1 : 0, 0);
+      G.set('tint', this.debugView, s.cloudCover === undefined ? (this.cloudCover === undefined ? 0.36 : this.cloudCover) : s.cloudCover, this.opticsTest ? 1 : 0, 0);
       this.gpu.queue.writeBuffer(this.gBuf, 0, G.data);
     }
 
@@ -171,9 +185,11 @@
     // targetView: GPUTextureView of the final LDR image (canvas texture or an offscreen texture).
     frame(s, targetView, targetW, targetH) {
       const gpu = this.gpu, dev = gpu.device;
-      this.resize(targetW * this.scale, targetH * this.scale);
+      this.resize(targetW * this.scale, targetH * this.scale, targetW, targetH);
       // dependent quantities for the sim / caustics
       const cam = s.cam;
+      const sunVec = [Math.sin(s.sunAz * CV.D2R) * Math.cos(s.sunElev * CV.D2R), Math.sin(s.sunElev * CV.D2R), -Math.cos(s.sunAz * CV.D2R) * Math.cos(s.sunElev * CV.D2R)];
+      this.caustics.place(s.causticCenter, s.meanDepth, sunVec);   // fixes the map window BEFORE the globals that describe it are written
       this.updateGlobals(s);
       const enc = dev.createCommandEncoder({ label: 'frame' });
       const cur = this.waves.encode(enc, s.time, s.dt, this.timer.first());
@@ -181,7 +197,7 @@
       this.ripples.encode(enc, s.dt, focus, this.terrain.seaLevel + s.seaOffset);
       // caustics need the scene bind group of the fresh wave textures
       this.caustics.sceneBG = this.sceneBG[cur];
-      this.caustics.encode(enc, s.causticCenter, s.meanDepth, [Math.sin(s.sunAz * CV.D2R) * Math.cos(s.sunElev * CV.D2R), Math.sin(s.sunElev * CV.D2R), -Math.cos(s.sunAz * CV.D2R) * Math.cos(s.sunElev * CV.D2R)]);
+      this.caustics.encode(enc);
       const ms = this.sampleCount > 1;
       const pass = enc.beginRenderPass({ label: 'scene',
         colorAttachments: [{ view: ms ? this.hdrMSView : this.hdrView, resolveTarget: ms ? this.hdrView : undefined, loadOp: 'clear', clearValue: [0, 0, 0, 1], storeOp: ms ? 'discard' : 'store' }],
@@ -192,14 +208,27 @@
       if (!skip.sky) { pass.setPipeline(this.pSky); pass.draw(3); }
       if (!skip.terrain) {
         pass.setPipeline(this.pTerrain);
-        pass.setBindGroup(1, this.meshBG[1]); pass.setIndexBuffer(this.terrain.meshFar.buf, 'uint32'); pass.drawIndexed(this.terrain.meshFar.count);
-        pass.setBindGroup(1, this.meshBG[0]); pass.setIndexBuffer(this.terrain.meshNear.buf, 'uint32'); pass.drawIndexed(this.terrain.meshNear.count);
+        // tiles that are off-screen, or lie wholly below the waterline (the water pass replaces them), are not drawn
+        const planes = CV.frustumPlanes(s.cam.viewProj), seaY = this.terrain.seaLevel + s.seaOffset - 0.75;
+        let drawn = 0;
+        for (const [bg, mesh] of [[1, this.terrain.meshFar], [0, this.terrain.meshNear]]) {
+          pass.setBindGroup(1, this.meshBG[bg]); pass.setIndexBuffer(mesh.buf, 'uint32');
+          for (const t of mesh.tiles) { if (t.y1 < seaY || !CV.boxInFrustum(planes, t)) continue; pass.drawIndexed(t.count, 1, t.first); drawn++; }
+        }
+        this.tilesDrawn = drawn;
       }
       if (!skip.water) { pass.setPipeline(this.pWater); pass.setIndexBuffer(this.waterIdx, 'uint32'); pass.drawIndexed(this.waterIdxCount); }
       pass.end();
-      gpu.queue.writeBuffer(this.pBuf, 0, new Float32Array([s.exposureLin, s.vignette, (s.time * 60) % 1000, 1.12]));
-      const post = enc.beginRenderPass({ label: 'post', timestampWrites: CV.tw('post'), colorAttachments: [{ view: targetView, loadOp: 'clear', clearValue: [0, 0, 0, 1], storeOp: 'store' }] });
-      post.setPipeline(this.pPost); post.setBindGroup(0, this.postBG); post.draw(3); post.end();
+      gpu.queue.writeBuffer(this.pBuf, 0, new Float32Array([s.exposureLin, s.vignette, (s.time * 60) % 1000, 1.12, 0, this.width, this.height, 0]));
+      if (this.upscale) {
+        const g = enc.beginRenderPass({ label: 'grade', timestampWrites: CV.tw('grade'), colorAttachments: [{ view: this.ldrView, loadOp: 'clear', clearValue: [0, 0, 0, 1], storeOp: 'store' }] });
+        g.setPipeline(this.pGrade); g.setBindGroup(0, this.postBG); g.draw(3); g.end();
+        const u = enc.beginRenderPass({ label: 'upscale', timestampWrites: CV.tw('upscale'), colorAttachments: [{ view: targetView, loadOp: 'clear', clearValue: [0, 0, 0, 1], storeOp: 'store' }] });
+        u.setPipeline(this.pUp); u.setBindGroup(0, this.upBG); u.draw(3); u.end();
+      } else {
+        const post = enc.beginRenderPass({ label: 'post', timestampWrites: CV.tw('post'), colorAttachments: [{ view: targetView, loadOp: 'clear', clearValue: [0, 0, 0, 1], storeOp: 'store' }] });
+        post.setPipeline(this.pPost); post.setBindGroup(0, this.postBG); post.draw(3); post.end();
+      }
       if (CV.prof) CV.prof.finish(enc); else this.timer.resolveInto(enc);
       dev.queue.submit([enc.finish()]);
       this.timer.readback();

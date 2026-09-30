@@ -134,22 +134,31 @@
       this.auxTex = device.createTexture({ label: 'terrainAux', size: [n.nx, n.nz], format: 'rgba16float', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
       queue.writeTexture({ texture: this.auxTex }, CV.toHalf(this.aux), { bytesPerRow: n.nx * 8 }, [n.nx, n.nz]);
 
-      // Grid meshes (indexed; vertex positions are derived from the vertex index + DEM texture in the vertex shader).
+      // Grid meshes (indexed; vertex positions are derived from the vertex index + DEM texture in the vertex shader). The index buffer is grouped
+      // into TILE x TILE-cell tiles, each with a bounding box, so the renderer can skip tiles that are off-screen or entirely under water.
+      const TILE = 32;
       const build = (g, skipInsideNear) => {
-        const cellsX = g.nx - 1, cellsZ = g.nz - 1, idx = [];
+        const cellsX = g.nx - 1, cellsZ = g.nz - 1, tilesX = Math.ceil(cellsX / TILE), tilesZ = Math.ceil(cellsZ / TILE);
         const r = this.nearRect, inner = this.blend;
-        let count = 0; const arr = new Uint32Array(cellsX * cellsZ * 6);
-        for (let j = 0; j < cellsZ; j++) for (let i = 0; i < cellsX; i++) {
-          if (skipInsideNear) { // cell fully inside the fully-blended interior of the near window -> drawn by the near mesh
-            const xa = g.x0 + (i + 0.5) * g.dx, xb = g.x0 + (i + 1.5) * g.dx, za = g.z0 + (j + 0.5) * g.dz, zb = g.z0 + (j + 1.5) * g.dz;
-            if (xa > r.x0 + inner && xb < r.x1 - inner && za > r.z0 + inner && zb < r.z1 - inner) continue;
+        let count = 0; const arr = new Uint32Array(cellsX * cellsZ * 6), tiles = [];
+        for (let tj = 0; tj < tilesZ; tj++) for (let ti = 0; ti < tilesX; ti++) {
+          const first = count, i0 = ti * TILE, j0 = tj * TILE, i1 = Math.min(cellsX, i0 + TILE), j1 = Math.min(cellsZ, j0 + TILE);
+          for (let j = j0; j < j1; j++) for (let i = i0; i < i1; i++) {
+            if (skipInsideNear) { // cell fully inside the fully-blended interior of the near window -> drawn by the near mesh
+              const xa = g.x0 + (i + 0.5) * g.dx, xb = g.x0 + (i + 1.5) * g.dx, za = g.z0 + (j + 0.5) * g.dz, zb = g.z0 + (j + 1.5) * g.dz;
+              if (xa > r.x0 + inner && xb < r.x1 - inner && za > r.z0 + inner && zb < r.z1 - inner) continue;
+            }
+            const a = j * g.nx + i, b = a + 1, c = a + g.nx, d = c + 1;
+            arr[count++] = a; arr[count++] = c; arr[count++] = b; arr[count++] = b; arr[count++] = c; arr[count++] = d;
           }
-          const a = j * g.nx + i, b = a + 1, c = a + g.nx, d = c + 1;
-          arr[count++] = a; arr[count++] = c; arr[count++] = b; arr[count++] = b; arr[count++] = c; arr[count++] = d;
+          if (count === first) continue;
+          let hMin = 1e9, hMax = -1e9;   // vertex heights of the tile (the far mesh also samples the near grid inside the blend zone: small margin below)
+          for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) { const h = g.h[j * g.nx + i]; if (h < hMin) hMin = h; if (h > hMax) hMax = h; }
+          tiles.push({ first, count: count - first, x0: g.x0 + (i0 + 0.5) * g.dx, x1: g.x0 + (i1 + 0.5) * g.dx, z0: g.z0 + (j0 + 0.5) * g.dz, z1: g.z0 + (j1 + 0.5) * g.dz, y0: hMin - 6, y1: hMax + 6 });
         }
         const buf = device.createBuffer({ label: 'terrainIdx', size: count * 4, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST });
         queue.writeBuffer(buf, 0, arr.buffer, 0, count * 4);
-        return { buf, count };
+        return { buf, count, tiles };
       };
       this.meshNear = build(this.near, false);
       this.meshFar = build(this.far, true);
