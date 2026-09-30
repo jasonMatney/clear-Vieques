@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>ClearVieques — a spectral water study on Vieques</title>
-<meta name="description" content="Real-time WebGPU shallow-water study over NOAA topo-bathy of Vieques, Puerto Rico: spectral waves, Fresnel, Beer–Lambert absorption, refracted seabed, caustics.">
+<meta name="description" content="Real-time WebGPU shallow-water study over NOAA topo-bathy of Vieques, Puerto Rico: spectral waves, Fresnel, Beer–Lambert absorption, refracted seabed, caustics, and a bioluminescent night lagoon.">
 <style>
   :root {
     --bg: #0a1a1e; --ink: #eef5f2; --ink2: #b7cfcc; --ink3: #86a9a6; --line: rgba(255,255,255,.13);
@@ -61,6 +61,8 @@
   .seg button:first-child { border-radius: 3px 0 0 3px; } .seg button:last-child { border-radius: 0 3px 3px 0; border-left: 0; }
   .seg button.on { background: rgba(207,238,228,.2); }
   .seg button:disabled { opacity: .4; cursor: not-allowed; }
+  body.night { --accent: #a8e6ff; --panel: rgba(4,11,20,.78); }
+  body.night #scrim { background: linear-gradient(to top, rgba(2,6,14,.6), rgba(2,6,14,0)); }
   #scrim { position: fixed; left: 0; right: 0; bottom: 0; height: 130px; pointer-events: none; background: linear-gradient(to top, rgba(4,18,22,.46), rgba(4,18,22,0)); transition: opacity .25s; }
   body.hidden #scrim { opacity: 0; }
   #credit { position: fixed; left: 34px; bottom: 44px; max-width: 560px; font: 400 9px/1.5 var(--sans); color: rgba(213,229,224,.72); text-shadow: 0 1px 6px rgba(0,0,0,.5); transition: opacity .25s; }
@@ -91,7 +93,7 @@
     <p class="eyebrow">01 / Location</p>
     <div class="tabs" role="tablist">
       <button class="tab on" data-site="caracas" role="tab">Playa Caracas</button>
-      <button class="tab" data-site="mosquito" role="tab" disabled title="Night mode with bioluminescence — next milestone">Mosquito Bay</button>
+      <button class="tab" data-site="mosquito" role="tab">Mosquito Bay</button>
     </div>
     <h1 id="siteName">Playa Caracas</h1>
     <p class="sub" id="siteSub">Red Beach · south coast of Vieques</p>
@@ -107,13 +109,14 @@
   </section>
   <section>
     <div class="row">
-      <div class="seg"><button id="btnDay" class="on">Day</button><button id="btnNight" disabled title="Night mode arrives with Mosquito Bay">Night</button></div>
+      <div class="seg"><button id="btnDay" class="on">Day</button><button id="btnNight" title="Moonlit water (N)">Night</button></div>
       <button class="b" id="btnReset">Reset</button>
       <button class="b" id="btnPause">Pause</button>
     </div>
     <div class="row">
       <button class="b" id="btnShot" title="Low over the water, sun behind the camera">Hero view</button>
       <button class="b" id="btnMode" title="Toggle fly / orbit camera (O)">Fly</button>
+      <button class="b" id="btnPaddle" title="Paddle: drag over the water to stir it (X)">Paddle</button>
     </div>
   </section>
 </main>
@@ -121,7 +124,7 @@
 <button id="hide">Hide controls ↗</button>
 <div id="scrim"></div>
 <div id="credit">Optics &amp; UI tone after <a href="https://github.com/Aureliengmz/clearwater" target="_blank" rel="noopener">Aureliengmz/clearwater</a> and <a href="https://github.com/SamG-Coder/clearwater" target="_blank" rel="noopener">SamG-Coder/clearwater</a> (MIT, © Lumaris). Terrain: NOAA NCEI CUDEM 1/9″ topo-bathy. Sparse tracks © OpenStreetMap contributors. No third-party textures or assets.</div>
-<div id="hint">Drag to look · WASD fly · Q/E down/up · Shift boost · O orbit · Click water to ripple · H hide</div>
+<div id="hint">Drag to look · WASD fly · Q/E down/up · Shift boost · O orbit · Click water to ripple · X paddle · N day / night · H hide</div>
 <div id="hud"></div>
 
 <div id="loader"><div class="mark">≈</div><h2>Reading the seabed.</h2><p id="loadMsg">Starting WebGPU…</p></div>
@@ -131,6 +134,7 @@
 <script src="src/util.js"></script>
 <script src="src/gpu.js"></script>
 <script src="src/sky.js"></script>
+<script src="src/night.js"></script>
 <script src="src/terrain.js"></script>
 <script src="src/shaders/common.js"></script>
 <script src="src/shaders/waves.js"></script>

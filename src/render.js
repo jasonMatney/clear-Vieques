@@ -59,22 +59,7 @@
       this.noise = dev.createTexture({ label: 'noise', size: [256, 256], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
       gpu.queue.writeTexture({ texture: this.noise }, nb, { bytesPerRow: 1024 }, [256, 256]);
 
-      // shared scene bind groups (one per wave-slope ping-pong texture)
-      const make = (i) => dev.createBindGroup({ layout: this.sceneLayout, entries: [
-        { binding: 0, resource: { buffer: this.gBuf } }, { binding: 1, resource: this.samLin }, { binding: 2, resource: this.samRep },
-        { binding: 3, resource: this.terrain.demNear.createView() }, { binding: 4, resource: this.terrain.demFar.createView() },
-        { binding: 5, resource: this.terrain.auxTex.createView() }, { binding: 6, resource: this.sky.tex.createView() },
-        { binding: 7, resource: this.waves.dispView }, { binding: 8, resource: this.waves.slopeView[i] },
-        { binding: 9, resource: this.ripples.out.createView() }, { binding: 10, resource: this.caustics.sceneView },
-        { binding: 11, resource: this.noise.createView() },
-        { binding: 12, resource: this.terrain.crownTex.createView() }, { binding: 13, resource: this.terrain.meanTex.createView() }] });
-      this.sceneBG = [make(0), make(1)];
-
-      // terrain mesh uniforms
-      const mu = (g, isFar) => { const b = CV.buffer(gpu, 32, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, 'meshU');
-        gpu.queue.writeBuffer(b, 0, new Float32Array([g.x0, g.z0, g.dx, g.dz, g.nx, g.nz, isFar ? 1 : 0, 0])); return b; };
-      const meshLayout = dev.createBindGroupLayout({ entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } }] });
-      this.meshBG = [this.terrain.meshNear.grid, this.terrain.meshFar.grid].map((g, i) => dev.createBindGroup({ layout: meshLayout, entries: [{ binding: 0, resource: { buffer: mu(g, i === 1) } }] }));
+      this.buildTerrainBindings();
 
       // water mesh indices
       const { seg, rings } = this.mesh, idx = new Uint32Array((rings - 1) * seg * 6); let k = 0;
@@ -91,8 +76,7 @@
         CV.shader(gpu, 'sky', prelude + CV.wgsl.sky), CV.shader(gpu, 'terrain', prelude + CV.wgsl.terrain()),
         CV.shader(gpu, 'water', prelude + CV.wgsl.water(this.mesh)), CV.shader(gpu, 'post', CV.wgsl.post)]);
       this.modules = { mSky, mTerr, mWater, mPost };
-      await this.structs.ready; this.structs.setSite(this.terrain);
-      this.meshLayout = meshLayout;
+      await this.structs.ready;
       this.postBGL = dev.createBindGroupLayout({ entries: [
         { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
         { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
@@ -103,6 +87,30 @@
       this.pBuf = CV.buffer(gpu, 32, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, 'postU');
       this.buildPipelines();
     }
+
+    // (Re)creates every bind group that references the current terrain: scene bind groups (DEM, aux, canopy textures) and the mesh uniforms.
+    buildTerrainBindings() {
+      const dev = this.gpu.device, gpu = this.gpu;
+      const make = (i) => dev.createBindGroup({ layout: this.sceneLayout, entries: [
+        { binding: 0, resource: { buffer: this.gBuf } }, { binding: 1, resource: this.samLin }, { binding: 2, resource: this.samRep },
+        { binding: 3, resource: this.terrain.demNear.createView() }, { binding: 4, resource: this.terrain.demFar.createView() },
+        { binding: 5, resource: this.terrain.auxTex.createView() }, { binding: 6, resource: this.sky.tex.createView() },
+        { binding: 7, resource: this.waves.dispView }, { binding: 8, resource: this.waves.slopeView[i] },
+        { binding: 9, resource: this.ripples.out.createView() }, { binding: 10, resource: this.caustics.sceneView },
+        { binding: 11, resource: this.noise.createView() },
+        { binding: 12, resource: this.terrain.crownTex.createView() }, { binding: 13, resource: this.terrain.meanTex.createView() }] });
+      this.sceneBG = [make(0), make(1)];
+      // terrain mesh uniforms
+      const mu = (g, isFar) => { const b = CV.buffer(gpu, 32, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, 'meshU');
+        gpu.queue.writeBuffer(b, 0, new Float32Array([g.x0, g.z0, g.dx, g.dz, g.nx, g.nz, isFar ? 1 : 0, 0])); return b; };
+      const meshLayout = this.meshLayout || dev.createBindGroupLayout({ entries: [{ binding: 0, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } }] });
+      this.meshLayout = meshLayout;
+      this.meshBG = [this.terrain.meshNear.grid, this.terrain.meshFar.grid].map((g, i) => dev.createBindGroup({ layout: meshLayout, entries: [{ binding: 0, resource: { buffer: mu(g, i === 1) } }] }));
+      this.structs.setSite(this.terrain);
+    }
+
+    // Site switch: adopt a new terrain (the previous one is destroyed by the caller).
+    setTerrain(terrain) { this.terrain = terrain; this.buildTerrainBindings(); }
 
     buildPipelines() {
       const gpu = this.gpu, dev = gpu.device, ms = { count: this.sampleCount }, { mSky, mTerr, mWater, mPost } = this.modules;
@@ -162,10 +170,18 @@
       G.set('screen', this.width, this.height, 1 / this.width, 1 / this.height);
       const el = s.sunElev * CV.D2R, az = s.sunAz * CV.D2R;
       G.set('sunDir', Math.sin(az) * Math.cos(el), Math.sin(el), -Math.cos(az) * Math.cos(el), el);
-      const st = this.sky.sunTrans;
-      G.set('sunE', Math.PI * st[0], Math.PI * st[1], Math.PI * st[2], s.exposure);
-      G.set('skyE', ...this.sky.skyIrr, 0);
-      G.set('horizon', ...this.sky.horizon, s.airExt);
+      // Night: the moon replaces the sun in every light path (direct light, sky LUT, glitter, shadows) with a phase-dependent gain K.
+      const st = this.sky.sunTrans, night = !!s.night, K = night ? CV.Night.gain(s.moon) : 1, tn = night ? [1.0, 0.97, 0.90] : [1, 1, 1];
+      G.set('sunE', Math.PI * st[0] * K * tn[0], Math.PI * st[1] * K * tn[1], Math.PI * st[2] * K * tn[2], s.exposure);
+      const Ks = night ? K * CV.Night.SKY : 1;                        // scattered light is dimmed relative to direct moonlight (see CV.Night.SKY)
+      G.set('skyE', this.sky.skyIrr[0] * Ks, this.sky.skyIrr[1] * Ks, this.sky.skyIrr[2] * Ks, Ks);   // .w scales the sky-LUT radiance
+      G.set('horizon', this.sky.horizon[0] * Ks, this.sky.horizon[1] * Ks, this.sky.horizon[2] * Ks, s.airExt);
+      const rel = night ? CV.Night.moonRel(s.moon) : 1;
+      G.set('night', rel, night ? CV.Night.signedAlpha(s.moon) : 0, K, night ? CV.Night.starVis(s.moon) : 0);
+      // bioluminescence: emitted light is fixed, but the eye/camera adapts, so it reads brighter as the moon thins ((FULL/K)^0.82, capped)
+      const adapt = night ? Math.min(Math.pow(CV.Night.FULL / K, 0.82), 5) : 1;
+      G.set('bio', night ? (s.biolum || 0) : 0, 1, adapt, 0);
+      G.set('paddle', ...(s.paddle || [0, 0, 0, 0]));
       const j = CV.jerlov(s.turbidity);
       G.set('kAbs', j.K[0], j.K[1], j.K[2], sea);
       G.set('rDeep', j.R[0] * s.deepGain, j.R[1] * s.deepGain, j.R[2] * s.deepGain, s.turbidity);
@@ -183,7 +199,7 @@
       G.set('ripple', ...this.ripples.uniforms());
       const cu = this.caustics.uniforms(); G.set('caustic', ...cu.a); G.set('causticB', ...cu.b);
       const mss = this.waves.mss(); G.set('shore', mss[0], mss[1], mss[2], 0);
-      G.set('misc', s.quality || 1, s.night ? 1 : 0, s.moon || 0, 0);
+      G.set('misc', s.quality || 1, s.night ? 1 : 0, s.moon || 0, s.matSet || 0);
       G.set('tint', this.debugView, s.cloudCover === undefined ? (this.cloudCover === undefined ? 0.36 : this.cloudCover) : s.cloudCover, this.opticsTest ? 1 : 0, this.noCrown ? 1 : 0);
       this.gpu.queue.writeBuffer(this.gBuf, 0, G.data);
     }
@@ -231,7 +247,7 @@
       }
       if (!skip.water) { pass.setPipeline(this.pWater); pass.setIndexBuffer(this.waterIdx, 'uint32'); pass.drawIndexed(this.waterIdxCount); }
       pass.end();
-      gpu.queue.writeBuffer(this.pBuf, 0, new Float32Array([s.exposureLin, s.vignette, (s.time * 60) % 1000, 1.12, this.debugView === 7 ? 1 : 0, this.width, this.height, 0]));
+      gpu.queue.writeBuffer(this.pBuf, 0, new Float32Array([s.exposureLin, s.vignette, (s.time * 60) % 1000, 1.12, this.debugView === 7 ? 1 : 0, this.width, this.height, s.night ? 1 : 0]));
       if (this.upscale) {
         const g = enc.beginRenderPass({ label: 'grade', timestampWrites: CV.tw('grade'), colorAttachments: [{ view: this.ldrView, loadOp: 'clear', clearValue: [0, 0, 0, 1], storeOp: 'store' }] });
         g.setPipeline(this.pGrade); g.setBindGroup(0, this.postBG); g.draw(3); g.end();
@@ -251,7 +267,6 @@
       const gpu = this.gpu, dev = gpu.device, fmt = gpu.format;
       const tex = dev.createTexture({ size: [w, h], format: fmt, usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC });
       const savedScale = this.scale; this.scale = 1;
-      if (this.waves.frame < 3) for (let i = 0; i < 3; i++) this.frame(state, tex.createView(), w, h); // warm-up: the very first frame has no caustic history
       this.frame(state, tex.createView(), w, h);
       const bpr = Math.ceil(w * 4 / 256) * 256;
       const buf = dev.createBuffer({ size: bpr * h, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });

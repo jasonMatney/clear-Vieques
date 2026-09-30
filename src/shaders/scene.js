@@ -38,7 +38,7 @@ fn sandAlbedo(p : vec2<f32>, dist : f32) -> vec3<f32> {
 
 // ---- land classification: shared by the canopy bake (compute, dist = 0) and the terrain shading (fragment)
 struct LandCls {
-  sandW : f32, rockW : f32, plain : f32, scrub : f32, trackW : f32, vegW : f32, dryMix : f32, sandEdge : f32, elev : f32,
+  sandW : f32, rockW : f32, plain : f32, scrub : f32, trackW : f32, vegW : f32, dryMix : f32, sandEdge : f32, elev : f32, mangW : f32,
   n1 : vec4<f32>, n2 : vec4<f32>, n3 : vec4<f32>, n4 : vec4<f32>,
 };
 fn landClass(pxz : vec2<f32>, n : vec3<f32>, aux : vec4<f32>, dist : f32) -> LandCls {
@@ -61,7 +61,10 @@ fn landClass(pxz : vec2<f32>, n : vec3<f32>, aux : vec4<f32>, dist : f32) -> Lan
   c.plain = (1.0 - smoothstep(1.5, 6.0, c.elev)) * (1.0 - smoothstep(0.03, 0.10, slope));       // low, flat coastal plain: grass and scrub
   c.scrub = smoothstep(c.sandEdge - 1.0, c.sandEdge + 3.0, sd) * (1.0 - smoothstep(c.sandEdge + 6.0, c.sandEdge + 40.0, sd));   // sea-grape band behind the sand
   c.trackW = 1.0 - smoothstep(1.1, 2.3, aux.z);
-  c.vegW = (1.0 - sandW) * (1.0 - c.rockW) * (1.0 - c.trackW);
+  // mangrove fringe (lagoon sites): low, gentle ground within ~100-200 m of the lagoon's water (aux.w = distance to it)
+  c.mangW = (1.0 - smoothstep(70.0, 230.0, aux.w)) * (1.0 - smoothstep(1.2, 3.4, c.elev)) * (1.0 - smoothstep(0.10, 0.30, slope)) * step(0.5, G.misc.w);
+  c.sandW *= 1.0 - c.mangW; c.plain *= 1.0 - c.mangW; c.scrub *= 1.0 - c.mangW;
+  c.vegW = (1.0 - c.sandW) * (1.0 - c.rockW) * (1.0 - c.trackW);
   return c;
 }
 
@@ -91,6 +94,7 @@ fn landMaterial(pxz : vec2<f32>, n : vec3<f32>, V : vec3<f32>, dist : f32, c : L
   var groundCover = mix(grass, leafDry, 0.35 * c.n3.g) * (0.75 + 0.5 * c.n4.r) * (0.80 + 0.40 * g1.r) * (0.88 + 0.24 * g2.g);
   groundCover = mix(groundCover, vec3<f32>(0.060, 0.082, 0.032), smoothstep(0.62, 0.86, g1.g) * 0.55);          // green tufts
   groundCover = mix(groundCover, vec3<f32>(0.19, 0.15, 0.10), smoothstep(0.80, 0.95, g2.r) * 0.35);            // bare soil flecks
+  groundCover = mix(groundCover, vec3<f32>(0.052, 0.042, 0.030) * (0.7 + 0.6 * g1.g), c.mangW);                 // mangrove mud
   let meanCol = mix(groundCover, canopyMean, treeFrac);
   var veg = meanCol; var occ = 1.0; var nAdd = vec3<f32>(0.0);
   if (resolved > 0.0) {
@@ -98,10 +102,11 @@ fn landMaterial(pxz : vec2<f32>, n : vec3<f32>, V : vec3<f32>, dist : f32, c : L
     if (hasCrown) {
       let idv = cr.id;
       let hfrac = crownProfile(rr, treeFrac);
-      let dryK = smoothstep(0.30, 0.95, fract(idv * 5.17 + 0.31)) * (0.30 + 0.70 * c.dryMix);      // deciduous crowns go yellow-brown in the dry season
+      let dryK = smoothstep(0.30, 0.95, fract(idv * 5.17 + 0.31)) * (0.30 + 0.70 * c.dryMix) * (1.0 - c.mangW);      // deciduous crowns go yellow-brown in the dry season
       var leaf = mix(leafGreen, leafDry, dryK);
       leaf = mix(leaf, leafDark, smoothstep(0.55, 0.0, fract(idv * 3.77)) * 0.5);                    // dark evergreen crowns
       leaf = mix(leaf, seaGrape, c.scrub * 0.85);
+      leaf = mix(leaf, vec3<f32>(0.026, 0.046, 0.021) * (0.85 + 0.3 * fract(idv * 9.7)), c.mangW);    // red mangrove: dense, dark, glossy
       leaf *= 0.85 + 0.30 * fract(idv * 11.13);
       let ln = fadeN(vnoise4(pxz * 1.9 + vec2<f32>(idv * 17.0, 3.0)), dist, 30.0, 220.0);            // leaf clumps (~0.5 m)
       let ls = fadeN(vnoise4(pxz * 7.3 + vec2<f32>(5.0, idv * 9.0)), dist, 8.0, 70.0);               // leaf speckle (~15 cm)
@@ -138,6 +143,11 @@ fn seabedAlbedo(q : vec3<f32>, nb : vec3<f32>, depth : f32, dist : f32) -> vec3<
   let n2 = fadeN(vnoise4(p * 0.19), dist, 200.0, 900.0);
   let n3 = fadeN(vnoise4(p * 1.30), dist, 25.0, 160.0);
   let n4 = fadeN(vnoise4(p * 5.20), dist, 10.0, 70.0);
+  if (G.misc.w > 0.5) {                                        // lagoon floor: dark mud with seagrass, not bright sand
+    let mud = vec3<f32>(0.120, 0.098, 0.072) * (0.90 + 0.20 * n3.g);
+    let sg = vec3<f32>(0.030, 0.052, 0.024) * (0.75 + 0.5 * n3.r);
+    return mix(mud, sg, smoothstep(0.42, 0.60, n1.r * 0.62 + n2.g * 0.38) * smoothstep(0.25, 1.1, depth));
+  }
   let sandW = vec3<f32>(0.68, 0.62, 0.52);
   let sandP = vec3<f32>(0.62, 0.49, 0.40);
   var sand = mix(sandW, sandP, smoothstep(0.38, 0.75, n1.b));
@@ -172,7 +182,13 @@ struct SkyVOut { @builtin(position) pos : vec4<f32>, @location(0) ndc : vec2<f32
   let cl = clouds(dir);
   var L = skyRadiance(vec3<f32>(dir.x, max(dir.y, 0.0), dir.z));
   if (dir.y < 0.0) { L = mix(L, G.horizon.rgb * 0.7, smoothstep(0.0, -0.05, dir.y)); }
-  L += min(sunDisc(dir), vec3<f32>(400.0)) * (1.0 - cl.a);
+  if (G.misc.y > 0.5) {
+    if (dir.y > 0.0) { L += starField(dir) * G.night.w * smoothstep(0.0, 0.18, dir.y) * (1.0 - cl.a); }
+    L += moonHalo(dir);
+    L += min(moonDisc(dir), vec3<f32>(400.0)) * (1.0 - cl.a);
+  } else {
+    L += min(sunDisc(dir), vec3<f32>(400.0)) * (1.0 - cl.a);
+  }
   L = mix(L, cl.rgb, cl.a);
   return vec4<f32>(L, 1.0);
 }
@@ -319,6 +335,19 @@ fn mssTotalAt(d : f32) -> f32 {
   return G.shore.x * e0 * e0 + G.shore.y * e1 * e1 + G.shore.z;
 }
 
+// Short blue-green flashes of Pyrodinium cells: ~6 cm cells, each flashing at its own random phase for ~0.15 s; the chance of a flash grows with
+// the agitation a (0..1). Only meaningful when a pixel is smaller than a cell, so the caller fades it with the pixel footprint.
+fn bioSparks(p : vec2<f32>, t : f32, a : f32) -> f32 {
+  let q = p / 0.075;
+  let i = floor(q);
+  let h = hash21(i); let h2 = hash21(i + vec2<f32>(17.3, 5.1));
+  let tt = t * (0.7 + 0.8 * h2) + h * 31.0;
+  let ph = fract(tt); let cycle = floor(tt);
+  let on = step(1.0 - a * 0.42, hash21(i + vec2<f32>(cycle * 1.31, cycle * 0.77)));
+  let d = length(fract(q) - 0.5) * 2.0;
+  return on * exp(-ph * 9.0) * pow(max(1.0 - d, 0.0), 2.0);
+}
+
 // Radiance seen in the reflection of terrain hit at q (cheap: no shadow march).
 fn reflectedLand(q : vec3<f32>, R : vec3<f32>, distTotal : f32) -> vec3<f32> {
   let c = shadeLand(q, -R, distTotal, false, 0.0);
@@ -441,6 +470,26 @@ fn reflectedLand(q : vec3<f32>, R : vec3<f32>, distTotal : f32) -> vec3<f32> {
 
   let Gr = smithG1(R.y, max(mssTotalAt(dRest) - ws.w, 0.0));
   var col = Lrefr + F * Gr * Lrefl + Lspec;
+
+  // ---- bioluminescence: Pyrodinium in the top metre of the lagoon flash where the water is disturbed (ripples, wake, paddle) and where waves break
+  if (G.bio.x > 0.0) {
+    let A = clamp(rp.w + smoothstep(0.08, 0.7, foam) * 0.30, 0.0, 1.0);
+    if (A > 0.004) {
+      let foot = dist * G.camFwd.w;                                     // metres per pixel: individual sparks only resolve up close
+      let sp = bioSparks(in.rest, t, A) * (1.0 - smoothstep(0.05, 0.40, foot));
+      let cloud = 0.65 + 0.35 * vnoise4(in.rest * 2.6 + vec2<f32>(t * 0.25, -t * 0.18)).r;          // uneven plankton density
+      let thick = 1.0 - exp(-min(H, 1.5) / 0.45);                         // shallow water holds less glowing volume
+      let energy = smoothstep(0.02, 0.32, length(rp.yz));                  // brighter where the water is actually moving
+      let glow = (0.95 * pow(A, 1.2) * cloud * (0.55 + 0.85 * energy) * thick + 3.4 * sp * thick) * G.bio.x * G.bio.z;
+      col += vec3<f32>(0.035, 0.70, 0.95) * glow * (1.0 - F) / (N_WATER * N_WATER) * exp(-K * 0.35);
+    }
+  }
+  // paddle blade marker: a thin pale ring on the water where the blade is
+  if (G.paddle.w > 0.5) {
+    let pd = length(in.rest - G.paddle.xy);
+    let ring = 1.0 - smoothstep(0.0, 0.035, abs(pd - G.paddle.z));
+    col += vec3<f32>(0.55, 0.85, 1.0) * ring * (0.55 + 0.45 * smoothstep(0.0, 1.0, G.misc.y)) * mix(0.55, 0.06, G.misc.y);
+  }
   col = mix(col, Lfoam, foam * 0.92);
   col = applyFog(col, dist);
 
@@ -502,6 +551,11 @@ fn toSrgb(c : vec3<f32>) -> vec3<f32> {
 fn grade(raw : vec3<f32>, uv : vec2<f32>) -> vec3<f32> {
   let P = PP[0];
   var c = raw * P.x;
+  if (PP[1].w > 0.001) {                                            // night: rod-vision look — desaturate and shift toward blue (Purkinje), highlights keep their colour
+    let l = dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));
+    let dim = 1.0 - smoothstep(0.25, 2.0, l);
+    c = mix(c, vec3<f32>(l) * vec3<f32>(0.78, 0.94, 1.22), 0.50 * PP[1].w * dim);
+  }
   let q = uv - 0.5;
   c *= 1.0 - P.y * dot(q, q) * 1.6;
   c = neutral(c);

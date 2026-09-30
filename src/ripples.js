@@ -3,14 +3,14 @@
 (function () {
   'use strict';
   const CV = window.CV;
-  const NR = 512, MAX_IMP = 8;
+  const NR = 512, MAX_IMP = 12;
 
   const stepCode = (fmt) => /* wgsl */`
 struct RU {
   win : vec4<f32>,     // new origin cell (x, z), old origin cell (x, z) — integer cell coordinates of the window corner
   p : vec4<f32>,       // cell size (m), dt (s), damping (1/s), sea level (m)
   q : vec4<f32>,       // impulse count, c max (m/s), agitation decay (1/s), unused
-  imp : array<vec4<f32>, ${MAX_IMP}>,   // x, z, radius, strength (m)
+  imp : array<vec4<f32>, ${MAX_IMP * 2}>,   // per impulse: (x, z, radius, strength (m)), (agitation 0..1, -, -, -)
 };
 @group(0) @binding(0) var<uniform> U : RU;
 @group(0) @binding(1) var prevTex : texture_2d<f32>;
@@ -74,12 +74,12 @@ fn main(@builtin(global_invocation_id) id : vec3<u32>) {
   let n = i32(U.q.x);
   for (var k = 0; k < ${MAX_IMP}; k++) {
     if (k >= n) { break; }
-    let im = U.imp[k];
+    let im = U.imp[2 * k]; let ia = U.imp[2 * k + 1].x;
     let d2 = dot(pos - im.xy, pos - im.xy);
     let s2 = im.z * im.z;
     let g = exp(-d2 / (2.0 * s2));
     h += im.w * g * (1.0 - 0.25 * d2 / s2);
-    ag = max(ag, min(abs(im.w) * 10.0, 1.0) * g);
+    ag = max(ag, ia * g);
   }
   ag = max(ag * exp(-U.q.z * dt), min(abs(v) * 1.2, 1.0));
   textureStore(nextTex, idx, vec4<f32>(h * edge, v * edge, ag * edge, 0.0));
@@ -111,7 +111,7 @@ fn main(@builtin(global_invocation_id) id : vec3<u32>) {
       this.gpu = gpu; this.terrain = terrain; this.NR = NR; this.cell = 0.08;  this.size = NR * this.cell;
       this.center = [0, 0]; this.pending = []; this.enabled = true; this.forceClear = false; this.oldOrigin = null;
       this.activeFrames = 0;   // frames left before the sim is considered settled (12 s of damping leaves < 1 mm) and is skipped entirely
-      this.params = { cMax: 1.5, damping: 0.42, agitDecay: 1.3, gain: 2.4 };
+      this.params = { cMax: 1.5, damping: 0.42, agitDecay: 0.95, gain: 2.4 };
       this.cur = 0;
       this.ready = this.init();
     }
@@ -123,28 +123,36 @@ fn main(@builtin(global_invocation_id) id : vec3<u32>) {
       const [m1, m2] = await Promise.all([CV.shader(gpu, 'rippleStep', stepCode(fmt)), CV.shader(gpu, 'rippleOut', outCode(fmt))]);
       this.pStep = dev.createComputePipeline({ label: 'rippleStep', layout: 'auto', compute: { module: m1, entryPoint: 'main' } });
       this.pOut = dev.createComputePipeline({ label: 'rippleOut', layout: 'auto', compute: { module: m2, entryPoint: 'main' } });
-      const ub = () => CV.buffer(gpu, (3 + MAX_IMP) * 16, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, 'rippleU');
+      const ub = () => CV.buffer(gpu, (3 + MAX_IMP * 2) * 16, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, 'rippleU');
       this.uBuf = [ub(), ub()]; // one per sub-step (queue.writeBuffer lands before the command buffer runs)
       this.gdBuf = CV.buffer(gpu, 3 * 16, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, 'rippleDem');
       this.cellBuf = CV.buffer(gpu, 16, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, 'rippleCell');
-      const n = t.near, f = t.far;
-      gpu.queue.writeBuffer(this.gdBuf, 0, new Float32Array([n.x0, n.z0, n.nx * n.dx, n.nz * n.dz, f.x0, f.z0, f.nx * f.dx, f.nz * f.dz, t.blend, 0, 0, 0]));
       gpu.queue.writeBuffer(this.cellBuf, 0, new Float32Array([this.cell, 0, 0, 0]));
       this.samLin = dev.createSampler({ magFilter: 'linear', minFilter: 'linear', addressModeU: 'clamp-to-edge', addressModeV: 'clamp-to-edge' });
-      const views = this.state.map(s => s.createView());
+      this.views = this.state.map(s => s.createView());
+      this.bgOut = [0, 1].map(i => dev.createBindGroup({ layout: this.pOut.getBindGroupLayout(0), entries: [
+        { binding: 0, resource: { buffer: this.cellBuf } }, { binding: 1, resource: this.views[i] }, { binding: 2, resource: this.out.createView() }] }));
+      this.setTerrain(t);
+    }
+
+    // Bind the wave-speed source (the DEM) of a terrain; called at start-up and on every site switch.
+    setTerrain(t) {
+      const gpu = this.gpu, dev = gpu.device, n = t.near, f = t.far, views = this.views;
+      this.terrain = t;
+      gpu.queue.writeBuffer(this.gdBuf, 0, new Float32Array([n.x0, n.z0, n.nx * n.dx, n.nz * n.dz, f.x0, f.z0, f.nx * f.dx, f.nz * f.dz, t.blend, 0, 0, 0]));
       this.bgStep = [0, 1].map(s => [0, 1].map(cur => dev.createBindGroup({ layout: this.pStep.getBindGroupLayout(0), entries: [
         { binding: 0, resource: { buffer: this.uBuf[s] } }, { binding: 1, resource: views[cur] }, { binding: 2, resource: views[1 - cur] },
         { binding: 3, resource: t.demNear.createView() }, { binding: 4, resource: t.demFar.createView() }, { binding: 5, resource: this.samLin },
         { binding: 6, resource: { buffer: this.gdBuf } }] })));
-      this.bgOut = [0, 1].map(i => dev.createBindGroup({ layout: this.pOut.getBindGroupLayout(0), entries: [
-        { binding: 0, resource: { buffer: this.cellBuf } }, { binding: 1, resource: views[i] }, { binding: 2, resource: this.out.createView() }] }));
+      this.forceClear = true; this.pending.length = 0; this.activeFrames = 0;
     }
 
     // World-space impulse (metres). strength = metres of water height (negative = dip).
-    splash(x, z, radius = 0.17, strength = -0.05) {
+    // agit = how much this disturbance excites bioluminescent plankton (0..1); default follows the size of the height impulse.
+    splash(x, z, radius = 0.17, strength = -0.05, agit) {
       const c = this.center, h = this.size * 0.34;
       if (Math.abs(x - c[0]) > h || Math.abs(z - c[1]) > h) { this.center = [x, z]; this.forceClear = true; }
-      if (this.pending.length < MAX_IMP) this.pending.push([x, z, radius, strength]);
+      if (this.pending.length < MAX_IMP) this.pending.push([x, z, radius, strength, agit === undefined ? Math.min(Math.abs(strength) * 10, 1) : agit]);
       this.activeFrames = 720;
     }
     // Records sim steps. 'focus' is a point the window should follow (a spot ahead of the camera).
@@ -164,11 +172,11 @@ fn main(@builtin(global_invocation_id) id : vec3<u32>) {
       const steps = 2, sdt = Math.min(dt, 1 / 30) / steps;
       const imps = this.pending.splice(0, MAX_IMP);
       for (let s = 0; s < steps; s++) {
-        const u = new Float32Array((3 + MAX_IMP) * 4);
+        const u = new Float32Array((3 + MAX_IMP * 2) * 4);
         u.set(s === 0 ? [org[0], org[1], old[0], old[1]] : [org[0], org[1], org[0], org[1]], 0);
         u.set([cs, sdt, this.params.damping, seaLevel], 4);
         u.set([s === 0 ? imps.length : 0, this.params.cMax, this.params.agitDecay, 0], 8);
-        if (s === 0) for (let i = 0; i < imps.length; i++) u.set(imps[i], 12 + i * 4);
+        if (s === 0) for (let i = 0; i < imps.length; i++) { u.set(imps[i].slice(0, 4), 12 + i * 8); u[12 + i * 8 + 4] = imps[i][4]; }
         this.gpu.queue.writeBuffer(this.uBuf[s], 0, u);
         const pass = encoder.beginComputePass({ label: 'ripple', timestampWrites: CV.tw('ripple') });
         pass.setPipeline(this.pStep); pass.setBindGroup(0, this.bgStep[s][this.cur]); pass.dispatchWorkgroups(NR / 8, NR / 8, 1);

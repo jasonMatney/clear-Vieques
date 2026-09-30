@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Headless-Chrome screenshot / smoke-test driver for ClearVieques. No dependencies (Node >= 22: global fetch + WebSocket).
 //
-//   node tools/shot.mjs <url> <out.png> [--w 1600] [--h 900] [--wait 15000] [--eval "js expression"] [--chrome "/path/to/chrome"]
+//   node tools/shot.mjs <url> <out.png> [--w 1600] [--h 900] [--dpr 1] [--wait 15000] [--eval "js expression"] [--chrome "/path/to/chrome"]
 //
 // Works for http://localhost:8137/ (node tools/serve.mjs) AND for file:///…/index.html (proving the demo runs straight from disk).
 // It waits (real time) until CV.app.ready, optionally evaluates a JS expression (e.g. to move the camera), prints console errors,
@@ -13,9 +13,9 @@ import path from 'node:path';
 
 const args = process.argv.slice(2);
 const url = args[0], out = args[1];
-if (!url || !out) { console.error('usage: node tools/shot.mjs <url> <out.png> [--w N --h N --wait ms --eval js --chrome path]'); process.exit(2); }
+if (!url || !out) { console.error('usage: node tools/shot.mjs <url> <out.png> [--w N --h N --dpr N --wait ms --eval js --chrome path]'); process.exit(2); }
 const opt = (k, d) => { const i = args.indexOf('--' + k); return i >= 0 ? args[i + 1] : d; };
-const W = +opt('w', 1600), H = +opt('h', 900), WAIT = +opt('wait', 15000), EVAL = opt('eval', null);
+const W = +opt('w', 1600), H = +opt('h', 900), DPR = +opt('dpr', 1), WAIT = +opt('wait', 15000), EVAL = opt('eval', null);
 const chrome = opt('chrome', process.platform === 'darwin' ? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome' : 'google-chrome');
 const port = 9300 + Math.floor(Math.random() * 500);
 const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'cv-chrome-'));
@@ -43,7 +43,7 @@ async function main() {
   };
   const send = (method, params = {}) => new Promise(res => { const i = ++id; pending.set(i, res); ws.send(JSON.stringify({ id: i, method, params })); });
   await send('Page.enable'); await send('Runtime.enable');
-  await send('Emulation.setDeviceMetricsOverride', { width: W, height: H, deviceScaleFactor: 1, mobile: false });
+  await send('Emulation.setDeviceMetricsOverride', { width: W, height: H, deviceScaleFactor: DPR, mobile: false });
   await send('Page.navigate', { url });
   const evalJs = async (expr) => (await send('Runtime.evaluate', { expression: expr, awaitPromise: true, returnByValue: true })).result;
   const t0 = Date.now(); let ready = false;

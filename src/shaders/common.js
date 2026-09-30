@@ -34,6 +34,9 @@
     ['tint', 'vec4'],      // debug view id, cloud cover, optics test, unused
     ['crownA', 'vec4'],    // crown map: x0, z0, texel (m), nx
     ['crownB', 'vec4'],    // nz, mean-canopy cell (m), max canopy height (m), unused
+    ['night', 'vec4'],     // moon relative illuminance, signed phase angle (rad, + waxing), light gain K, star visibility
+    ['bio', 'vec4'],       // bioluminescence: site intensity, spark rate, glow gain, -
+    ['paddle', 'vec4'],    // virtual paddle blade: x, z, radius (m), active
     ['st0', 'vec4'], ['st1', 'vec4'], ['st2', 'vec4'], ['st3', 'vec4'],   // OSM shelters: x, z, yaw, roof half extent (0 = unused)
     ['st4', 'vec4'], ['st5', 'vec4'], ['st6', 'vec4'], ['st7', 'vec4'],
   ];
@@ -186,7 +189,7 @@ fn skyLutUV(dir : vec3<f32>) -> vec2<f32> {
   return vec2<f32>(phi / PI, sqrt(e / (0.5 * PI)));
 }
 fn skyRadiance(dir : vec3<f32>) -> vec3<f32> {
-  return textureSampleLevel(skyLut, samLin, skyLutUV(dir), 0.0).rgb;
+  return textureSampleLevel(skyLut, samLin, skyLutUV(dir), 0.0).rgb * G.skyE.w;   // skyE.w = light gain (1 by day, the moon-phase gain at night)
 }
 fn sunDisc(dir : vec3<f32>) -> vec3<f32> {
   let c = dot(dir, G.sunDir.xyz);
@@ -195,6 +198,60 @@ fn sunDisc(dir : vec3<f32>) -> vec3<f32> {
   let edge = 1.0 - smoothstep(r2 * 0.55, r2 * 1.15, a2);
   let mu = sqrt(max(1.0 - a2 / r2, 0.0));
   return G.sunE.rgb / (PI * r2) * edge * (0.62 + 0.38 * mu);
+}
+
+// ------------------------------------------------------------------ night sky: stars, Milky Way, moon
+fn hash31(p : vec3<f32>) -> f32 {
+  var q = fract(p * 0.1031);
+  q += dot(q, q.zyx + 31.32);
+  return fract((q.x + q.y) * q.z);
+}
+// One layer of a cell-hash star field on the unit sphere (one star per cell, kept inside the cell so no neighbour search is needed).
+fn starLayer(dir : vec3<f32>, scale : f32, seed : f32, density : f32) -> f32 {
+  let p = dir * scale;
+  let ip = floor(p); let fp = p - ip;
+  let h = hash31(ip + seed);
+  if (h < density) { return 0.0; }
+  let o = 0.22 + 0.56 * vec3<f32>(hash31(ip + 11.1 + seed), hash31(ip + 23.7 + seed), hash31(ip + 47.3 + seed));
+  let ang = length(fp - o) / scale;                                    // angular distance to the star (rad)
+  let r = max(G.camFwd.w * 1.25, 0.0004);                              // ~1.25 pixels: stars stay point-like at any field of view
+  let mag = pow((h - density) / (1.0 - density), 5.0);                 // few bright stars, many faint ones
+  return mag * (1.0 - smoothstep(0.0, r, ang)) * (0.55 + 0.9 * hash31(ip + 5.5 + seed));
+}
+fn starField(dir : vec3<f32>) -> vec3<f32> {
+  var s = 0.9 * starLayer(dir, 55.0, 1.0, 0.86) + 0.55 * starLayer(dir, 120.0, 7.0, 0.90) + 0.32 * starLayer(dir, 260.0, 13.0, 0.93);
+  // twinkle is skipped (the sky is static); colour: mostly blue-white, a few warm
+  let warm = hash31(floor(dir * 55.0) + 3.0);
+  var col = mix(vec3<f32>(0.75, 0.86, 1.0), vec3<f32>(1.0, 0.86, 0.68), smoothstep(0.7, 1.0, warm));
+  // Milky Way: a soft band along a tilted great circle with dark lanes
+  let gn = normalize(vec3<f32>(0.35, 0.82, 0.45));
+  let band = exp(-pow(dot(dir, gn) / 0.20, 2.0));
+  let lane = vnoise4(dir.xz * 5.0 + dir.y * vec2<f32>(3.0, 7.0)).r;          // continuous on the sphere (an atan2 azimuth would leave a seam)
+  let mw = band * (0.25 + 1.1 * smoothstep(0.30, 0.75, lane)) * 0.05;
+  return col * s * 1.6 + vec3<f32>(0.62, 0.72, 1.0) * mw;
+}
+// Moon disc with the true phase: a sphere lit from a direction that rotates with the phase angle, maria as dark patches, a hint of earthshine.
+const MOON_R : f32 = 0.0068;   // angular radius (rad): the real 0.0045 enlarged 1.5x, as the moon appears to the eye
+fn moonDisc(dir : vec3<f32>) -> vec3<f32> {
+  let M = G.sunDir.xyz;
+  if (dot(dir, M) < 0.9994) { return vec3<f32>(0.0); }
+  let r = normalize(cross(vec3<f32>(0.0, 1.0, 0.0), M)); let u = cross(M, r);
+  let x = dot(dir, r) / MOON_R; let y = dot(dir, u) / MOON_R;
+  let d2 = x * x + y * y;
+  if (d2 > 1.0) { return vec3<f32>(0.0); }
+  let z = sqrt(1.0 - d2);
+  let a = G.night.y; let al = abs(a); let sg = select(-1.0, 1.0, a >= 0.0);
+  let nl = x * sg * sin(al) + z * cos(al);                             // n . l on the lunar sphere
+  let lit = smoothstep(-0.03, 0.10, nl);
+  let mar = 0.60 + 0.40 * smoothstep(0.30, 0.68, vnoise4(vec2<f32>(x, y) * 2.4 + 4.0).r);
+  let edge = 1.0 - smoothstep(0.96, 1.0, sqrt(d2));                    // soft limb
+  let base = (lit * (0.80 + 0.20 * z) + 0.0007) * mar * edge;               // 0.0007: earthshine on the dark limb
+  return G.sunE.rgb / (PI * MOON_R * MOON_R) * 0.12 * base;
+}
+// scattered glow around the moon (lens and atmosphere): larger and brighter for a fuller moon
+fn moonHalo(dir : vec3<f32>) -> vec3<f32> {
+  let th = acos(clamp(dot(dir, G.sunDir.xyz), -1.0, 1.0));
+  return G.sunE.rgb * (0.030 * exp(-th * 22.0) + 0.0016 / (1.0 + pow(th / 0.16, 2.0)));
 }
 
 // ------------------------------------------------------------------ fair-weather cumulus (planar layer, procedural)
@@ -225,7 +282,11 @@ fn clouds(dir : vec3<f32>) -> vec4<f32> {
 }
 fn skyWithClouds(dir : vec3<f32>) -> vec3<f32> {
   let c = clouds(dir);
-  return mix(skyRadiance(dir), c.rgb, c.a);
+  var L = skyRadiance(dir);
+  if (G.misc.y > 0.5 && dir.y > 0.0) {                                  // night: stars fade toward the horizon haze, and behind clouds
+    L += starField(dir) * G.night.w * smoothstep(0.0, 0.18, dir.y) * (1.0 - c.a);
+  }
+  return mix(L, c.rgb, c.a);
 }
 
 // ------------------------------------------------------------------ optics helpers

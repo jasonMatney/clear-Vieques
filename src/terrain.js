@@ -54,10 +54,10 @@
   }
 
   CV.Terrain = class Terrain {
-    constructor(gpu, siteId) {
+    constructor(gpu, siteId, site) {
       const T = window.CV_TERRAIN && window.CV_TERRAIN[siteId];
       if (!T) throw new Error(`Terrain data for "${siteId}" not found. Run tools/build_terrain.py + tools/pack_terrain.py (see README).`);
-      this.gpu = gpu; this.siteId = siteId; this.meta = T.meta || {}; this.osm = T.osm || null;
+      this.gpu = gpu; this.siteId = siteId; this.meta = T.meta || {}; this.osm = T.osm || null; this.site = site || {};
       this.near = decodeGrid(T.near); this.far = decodeGrid(T.far);
       const n = this.near;
       this.nearRect = { x0: n.x0, z0: n.z0, x1: n.x0 + n.nx * n.dx, z1: n.z0 + n.nz * n.dz };
@@ -110,13 +110,39 @@
           }
         }
       }
+      // enclosed lagoon (Mosquito Bay): water cells connected to the seed, deeper than 0.3 m, inside the site's box (which cuts the inlet channel at its neck)
+      // -> distance from every cell to the lagoon's water; drives the mangrove fringe. 9999 m where the site has no lagoon.
+      let dLag = null;
+      const lg = this.site.lagoon;
+      if (lg) {
+        const lagoon = new Uint8Array(N), stack = [];
+        const ci = (x) => Math.floor((x - g.x0) / g.dx), cj = (z) => Math.floor((z - g.z0) / g.dz);
+        const i0 = Math.max(0, ci(lg.box[0])), i1 = Math.min(nx - 1, ci(lg.box[2])), j0 = Math.max(0, cj(lg.box[1])), j1 = Math.min(nz - 1, cj(lg.box[3]));
+        const seed = cj(lg.seed[1]) * nx + ci(lg.seed[0]);
+        if (g.h[seed] < -0.3) { stack.push(seed); lagoon[seed] = 1; }
+        while (stack.length) {
+          const k = stack.pop(), i = k % nx, j = (k / nx) | 0;
+          for (const [di, dj] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+            const ni = i + di, nj = j + dj; if (ni < i0 || ni > i1 || nj < j0 || nj > j1) continue;
+            const nk = nj * nx + ni; if (!lagoon[nk] && g.h[nk] < -0.3) { lagoon[nk] = 1; stack.push(nk); }
+          }
+        }
+        dLag = distanceTransform(lagoon, nx, nz, g.dx);
+        this.lagoonCells = lagoon.reduce((a, b) => a + b, 0);
+      }
       for (let k = 0; k < N; k++) {
         aux[k * 4] = land[k] ? dWater[k] : -dLand[k]; // signed distance to the (0 m) waterline, + inland
         aux[k * 4 + 1] = blur[k] - g.h[k];             // >0 concave (occluded), <0 convex
         aux[k * 4 + 2] = trackD[k];
-        aux[k * 4 + 3] = 0;
+        aux[k * 4 + 3] = dLag ? Math.min(dLag[k], 9000) : 9999;   // distance to the lagoon's water (m)
       }
       this.aux = aux;
+    }
+
+    // Free GPU resources (site switch).
+    destroy() {
+      for (const t of [this.demNear, this.demFar, this.auxTex, this.crownTex, this.meanTex]) if (t) t.destroy();
+      for (const m of [this.meshFar && this.meshFar.buf, this.meshNear && this.meshNear.idx]) if (m) m.destroy();
     }
 
     // ------------------------------------------------------------------ GPU

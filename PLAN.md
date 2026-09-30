@@ -1,6 +1,6 @@
 # ClearVieques — plan (first deliverable)
 
-A photoreal shallow-water study over **real** Vieques bathymetry. Day scene at Playa Caracas is implemented; Mosquito Bay (night, bioluminescence) is data-ready and is the next milestone.
+A photoreal shallow-water study over **real** Vieques bathymetry. Both scenes are implemented: Playa Caracas by day and Mosquito Bay by night (moon, stars, mangroves, bioluminescence).
 
 ## 1. Data subset
 
@@ -10,7 +10,7 @@ A photoreal shallow-water study over **real** Vieques bathymetry. Day scene at P
 | **Vertical datum** | NAD83 / PRVD02 orthometric heights, treated as mean sea level (0 m). PRVD02↔local MSL is ≲0.1 m and not applied. |
 | **Per site** | `near` grid 4 m spacing, 4 km × 3 km; `far` grid 20 m spacing, 14 km × 10 km. Int16 centimetres, row 0 = north. Blended over 160 m in the shader. |
 | **Cross-check** | NOAA NGS 2019 topobathy lidar DEM (validation only): CUDEM is +0.13 m (Caracas) / +0.10 m (Mosquito) higher, RMS 0.20 / 0.18 m; worst on steep reef fronts and forested slopes. |
-| **OSM** | Sparse only: 45 tracks/paths + 3 picnic shelters (Caracas), 41 tracks (Mosquito). Tracks are rasterised into the ground material; shelters are not drawn yet. |
+| **OSM** | Sparse only: 45 tracks/paths + 3 picnic shelters (Caracas), 41 tracks (Mosquito). Tracks are rasterised into the ground material; the shelters are drawn as small instanced meshes on their real footprints. |
 
 **Deviation from the brief, stated plainly:** the "2016 NOAA NGS topobathy lidar DEM for Puerto Rico, Vieques, Culebra" does not cover Vieques (per the data pipeline's search), and no CUDEM 1/3″ tile exists over Vieques. CUDEM 1/9″ is therefore the sole source of every elevation value; the 2019 NGS lidar cross-checks it.
 
@@ -39,21 +39,29 @@ Local azimuthal-equidistant projection centred on each site's origin (`+proj=aeq
 * **Sky:** CPU single-scattering atmosphere (Rayleigh + Mie + ozone) → LUT; calibrated to diffuse ≈ 17 % of global irradiance; procedural cumulus feed the reflections. Khronos PBR-Neutral tone mapping.
 * **Land:** procedural dry-forest crowns, sea-grape scrub, wind-rippled sand, wet swash band, sun shadows marched on the DEM. CUDEM is bare-earth, so canopy is procedural.
 
-**Night (Mosquito Bay, next).** Same water optics with a moon-lit sky (moon-phase slider scales sky/moon radiance and glow visibility), dark mangroves, and a *Pyrodinium*-style bioluminescence term driven by agitation: the ripple sim already writes an agitation channel; camera motion and a virtual paddle will inject into it, and a short-lived blue-green emission (≈ 480–500 nm) is added to the refracted radiance where agitation is high. Data (`mosquito.*`) is packed.
+**Night (Mosquito Bay, implemented).** The moon is the "sun" of the night scene: the same shader paths (direct light, sky LUT, glitter, shadows, clouds) run with a light whose strength follows the lunar phase law.
+
+* **Moon and sky:** relative illuminance from Allen's phase law (quarter ≈ 9 % of full, crescent ≈ 2 %); a photographic gain stands in for dark adaptation and compensates only ~55 % of the change, so a thin moon is genuinely darker. The scattered-light sky is dimmed relative to direct moonlight so the night sky stays deep blue with stars. The disc is a lit sphere with the true phase angle (waxing right, waning left), maria and earthshine; procedural stars (one hashed star per cell, three layers, ~1.25 px) and a Milky Way band with lanes. The grade desaturates and shifts toward blue (Purkinje) below ~2 in luminance.
+* **Mangroves:** a flood-fill of the DEM's enclosed lagoon gives a distance-to-lagoon field (stored in the aux texture); land that is low, gentle and within ~100–200 m of it is mangrove — a closed, dark, glossy canopy from the same crown bake as the dry forest, allowed to stand in the intertidal shallows. The lagoon floor is mud and seagrass.
+* **Bioluminescence:** the ripple sim's agitation channel (0..1) drives emission: `L = colour(0.035, 0.70, 0.95) x gain x [0.95 A^1.2 (patchy plankton density) (ripple energy) (1 - exp(-depth/0.45)) + 3.4 sparks]`, times (1 - F)/n^2 and Beer–Lambert. Sparks are ~7.5 cm cells that each flash at a random phase (~0.15 s), with a probability that grows with agitation and fade out beyond ~40 m. Sources: clicked ripples, a **paddle** (pointer strokes, interpolated so fast drags stay continuous), the **camera as a boat** (bow wave and V ahead of it), and breaking waves / shore swash. The emitted light is fixed, but exposure adapts, so the glow is scaled by (FULL/K)^0.82 (capped): the moon-phase slider changes how visible it is.
+* **Site defaults:** the lagoon is enclosed — short fetch (350 m + 1500 m x energy) and no ocean swell — so it is calm, with mirror-like moon reflections.
 
 ## 4. Architecture
 
 `index.html` + classic scripts (no bundler, no ES modules, so it also runs from `file://`) + `data/terrain.js` (base64 Int16 grids).
 
 ```
-sky.js (CPU LUT) → waves.js [evolve → FFT rows/cols → assemble → mips] → ripples.js [step ×2 → out]
-                 → caustics.js [photons → splat → mips] → render.js [sky → terrain → water → tone-map]
+per site (load / site switch):  terrain.js (DEM, aux, lagoon field) -> canopy.js [bake crowns 2 m -> stand mean 4 m]
+per frame:  sky.js (CPU LUT) -> waves.js [evolve -> FFT rows/cols -> assemble -> mips] -> ripples.js [step x2 -> out, skipped when settled]
+            -> caustics.js [photons -> splat (1024 or 2048) -> mips] -> render.js [sky -> terrain tiles -> shelters -> water]
+            -> post [grade to LDR -> edge-adaptive upscale]  (or grade straight to the canvas at native resolution)
 ```
 
-Adaptive resolution is driven by GPU timestamp queries (render scale first, then quality tiers: photon count and MSAA).
+Adaptive resolution walks a ladder of `(quality tier, render scale)` rungs from GPU timestamp queries (with hysteresis and a memory of rungs that failed); tiers set the caustic photon count / map size / refresh interval and MSAA. Site switching (`switchSite`) decodes the new terrain, re-bakes its canopy, rebinds the scene and ripple bind groups and destroys the old textures (~0.8 s).
 
 ## 5. Roadmap
 
-1. Mosquito Bay scene: night sky/moon, mangrove shading, bioluminescence, paddle.
-2. Real benthic classes (NOAA benthic habitat maps) instead of procedural sand/seagrass/hardground.
-3. Draw OSM shelters; wave refraction/shoaling over the real bathymetry; underwater camera.
+1. Real benthic classes (NOAA benthic habitat maps) instead of procedural sand/seagrass/hard-ground; mangrove prop roots in the shallows.
+2. Wave refraction/shoaling over the real bathymetry; an underwater camera.
+3. Moon and sun from an ephemeris (date, time, latitude) instead of sliders; tides from the vertical-datum offsets.
+4. Cross-browser / GPU validation (Safari, Firefox, integrated GPUs) and the half-float DEM fallback path.

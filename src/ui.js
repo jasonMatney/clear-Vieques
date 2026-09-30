@@ -22,6 +22,15 @@
       paint();
       this.defs[def.id] = { def, input, paint, el };
     }
+    // Change a slider's label / range / value in place (the sun slider becomes the moon-elevation slider at night).
+    reconfigure(id, o) {
+      const d = this.defs[id]; if (!d) return;
+      if (o.label !== undefined) { d.def.label = o.label; d.el.querySelector('.lab').textContent = o.label; }
+      if (o.min !== undefined) { d.def.min = o.min; d.input.min = o.min; }
+      if (o.max !== undefined) { d.def.max = o.max; d.input.max = o.max; }
+      if (o.value !== undefined) d.input.value = o.value;
+      d.paint();
+    }
     set(id, v) { const d = this.defs[id]; if (!d) return; d.input.value = v; d.paint(); }
     get(id) { return parseFloat(this.defs[id].input.value); }
     show(id, on) { const d = this.defs[id]; if (d) d.el.classList.toggle('off', !on); }

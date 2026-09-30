@@ -17,10 +17,11 @@ struct BU { a : vec4<f32>, b : vec4<f32> };     // a: grid x0, z0, cell (m), nx 
 // (stand height in metres, tree weight 0..1) at a point of the bare-earth terrain
 fn standAt(p : vec2<f32>) -> vec2<f32> {
   let ground = heightAt(p);
-  if (ground < seaLevel() + 0.35) { return vec2<f32>(0.0); }
+  if (ground < seaLevel() - 0.25) { return vec2<f32>(0.0); }
   let n = terrainNormal(p, 4.0);
   let aux = auxAt(p);
   let c = landClass(p, n, vec4<f32>(aux.x - 9.0, aux.y, aux.z, aux.w), 0.0);   // trees keep 9 m clear of the sand line the fragment shader will draw
+  if (ground < seaLevel() + 0.35 && c.mangW < 0.5) { return vec2<f32>(0.0); }  // only mangroves stand in the intertidal shallows
   var tree = c.vegW * (1.0 - 0.92 * c.plain);
   tree *= 1.0 - 0.7 * c.rockW;
   let coastal = 1.0 - smoothstep(20.0, 120.0, aux.x);
@@ -29,6 +30,8 @@ fn standAt(p : vec2<f32>) -> vec2<f32> {
   h *= 1.0 + 0.35 * clamp(aux.y / 3.0, -0.6, 1.0);         // taller in gullies (concave), shorter on convex ridges
   h *= 1.0 - 0.30 * smoothstep(60.0, 130.0, c.elev);       // exposed high ground
   h = mix(h, 2.8, c.scrub * 0.8);                          // sea-grape band behind the sand
+  h = mix(h, (3.6 + 2.6 * c.n2.g) * (1.0 + 0.15 * c.n3.r), c.mangW);   // mangrove: a lower, closed canopy
+  tree = max(tree, c.mangW * 1.05);
   return vec2<f32>(h, tree);
 }
 
@@ -100,6 +103,7 @@ fn bakeMean(@builtin(global_invocation_id) id : vec3<u32>) {
       G.set('kAbs', 0, 0, 0, t.seaLevel);
       G.set('crownA', cr.x0, cr.z0, cr.texel, cr.nx);
       G.set('crownB', cr.nz, n.dx, cr.maxH, 0);
+      G.set('misc', 1, 0, 0, t.site && t.site.matSet ? 1 : 0);
       const gBuf = CV.buffer(gpu, G.byteLength, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, 'bakeGlobals');
       gpu.queue.writeBuffer(gBuf, 0, G.data);
       const sceneBG = (crownView) => dev.createBindGroup({ layout: this.sceneLayout, entries: [
@@ -108,7 +112,8 @@ fn bakeMean(@builtin(global_invocation_id) id : vec3<u32>) {
         { binding: 6, resource: d.f16 }, { binding: 7, resource: d.f16a }, { binding: 8, resource: d.f16a }, { binding: 9, resource: d.f16 }, { binding: 10, resource: d.f16 },
         { binding: 11, resource: res.noise.createView() }, { binding: 12, resource: crownView }, { binding: 13, resource: d.u8 }] });
       const ub = (a, b) => { const buf = CV.buffer(gpu, 32, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, 'bakeU'); gpu.queue.writeBuffer(buf, 0, new Float32Array([...a, ...b])); return buf; };
-      const u1 = ub([cr.x0, cr.z0, cr.texel, cr.nx], [cr.nz, this.lattice, cr.maxH, 0]);
+      const lattice = (t.site && t.site.matSet === 1) ? 7.0 : this.lattice;   // closed mangrove canopy needs a denser crown lattice
+      const u1 = ub([cr.x0, cr.z0, cr.texel, cr.nx], [cr.nz, lattice, cr.maxH, 0]);
       const u2 = ub([n.x0, n.z0, n.dx, n.nx], [n.nz, 0, cr.maxH, 0]);
       const g1 = (u, tex) => dev.createBindGroup({ layout: this.l1, entries: [{ binding: 0, resource: { buffer: u } }, { binding: 1, resource: tex.createView() }] });
       const enc = dev.createCommandEncoder({ label: 'canopyBake' });

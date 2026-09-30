@@ -11,7 +11,7 @@
       this.pos = [0, 3, 0]; this.yaw = 0; this.pitch = 0; this.fov = 62;
       this.mode = 'fly'; this.orbit = { target: [0, 0, -30], dist: 25 };
       this.speed = 6; this.vel = [0, 0, 0]; this.keys = new Set();
-      this.drag = null; this.onClick = null; this.enabled = true;
+      this.drag = null; this.onClick = null; this.onPaddle = null; this.paddleMode = false; this.enabled = true;
       this.minAbove = 0.55;
       this.bind();
     }
@@ -47,13 +47,18 @@
 
     bind() {
       const c = this.canvas;
+      const paddle = (e, down) => { const r = c.getBoundingClientRect(); if (this.onPaddle) this.onPaddle(e.clientX - r.left, e.clientY - r.top, r.width, r.height, down); };
       c.addEventListener('pointerdown', e => {
         if (!this.enabled) return;
         c.setPointerCapture(e.pointerId);
-        this.drag = { x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY, t: performance.now(), moved: 0, button: e.button, shift: e.shiftKey };
+        this.drag = { x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY, t: performance.now(), moved: 0, button: e.button, shift: e.shiftKey, paddle: this.paddleMode && e.button === 0 && !e.shiftKey };
+        if (this.drag.paddle) paddle(e, true);
       });
       c.addEventListener('pointermove', e => {
-        const d = this.drag; if (!d) return;
+        const d = this.drag;
+        if (this.paddleMode && (!d || d.paddle)) { paddle(e, !!d); if (d) return; }   // the blade follows the pointer; dragging strokes the water
+        if (!d) return;
+        if (d.paddle) return;
         const dx = e.clientX - d.x, dy = e.clientY - d.y; d.x = e.clientX; d.y = e.clientY; d.moved += Math.abs(dx) + Math.abs(dy);
         if (d.button === 2 || d.shift) { if (this.mode === 'orbit') this.pan(dx, dy); return; }
         if (d.moved < 4 && performance.now() - d.t < 250) return;
@@ -63,6 +68,7 @@
       });
       const up = e => {
         const d = this.drag; this.drag = null;
+        if (d && d.paddle) { paddle(e, false); return; }
         if (d && d.button === 0 && !d.shift && Math.hypot(e.clientX - d.sx, e.clientY - d.sy) < 6 && performance.now() - d.t < 350 && this.onClick) {
           const r = c.getBoundingClientRect(); this.onClick(e.clientX - r.left, e.clientY - r.top, r.width, r.height);
         }
