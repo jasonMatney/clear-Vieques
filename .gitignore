@@ -1,0 +1,6 @@
+.DS_Store
+.claude/
+shots/
+node_modules/
+__pycache__/
+*.pyc

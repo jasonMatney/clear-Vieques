@@ -1,0 +1,47 @@
+{
+ "clean_run_total_bytes": 41101823,
+ "this_run_bytes": 0,
+ "items": [
+  {
+   "what": "CUDEM VRT/tile headers (range reads)",
+   "bytes": 65536
+  },
+  {
+   "what": "CUDEM 1/9 arc-sec near window, caracas",
+   "bytes": 4079616
+  },
+  {
+   "what": "CUDEM 1/9 arc-sec far window, caracas",
+   "bytes": 10223616
+  },
+  {
+   "what": "NGS 2019 lidar 4 m overview tiles, caracas",
+   "bytes": 3457024
+  },
+  {
+   "what": "Overpass response osm_caracas_3e4d977594.json",
+   "bytes": 124613
+  },
+  {
+   "what": "CUDEM 1/9 arc-sec near window, mosquito",
+   "bytes": 6192082
+  },
+  {
+   "what": "CUDEM 1/9 arc-sec far window, mosquito",
+   "bytes": 13058048
+  },
+  {
+   "what": "NGS 2019 lidar 4 m overview tiles, mosquito",
+   "bytes": 3653632
+  },
+  {
+   "what": "Overpass response osm_mosquito_e949c51fb8.json",
+   "bytes": 94965
+  },
+  {
+   "what": "NGS 2019 lidar tile index (zip)",
+   "bytes": 152691
+  }
+ ],
+ "note": "Windowed range reads only (no whole tiles). 'clean_run_total_bytes' = what a run with an empty cache downloads (summed from the cache sidecars); 'this_run_bytes' = counted in this invocation (0 when the cache was reused)."
+}

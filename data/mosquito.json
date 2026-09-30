@@ -1,0 +1,612 @@
+{
+ "id": "mosquito",
+ "name": "Puerto Mosquito (Mosquito Bay), Vieques, Puerto Rico",
+ "lat0": 18.102,
+ "lon0": -65.4451,
+ "origin_definition": "Area centroid of the enclosed lagoon (water deeper than 0.5 m, cut from the open sea at the inlet neck)",
+ "user_hint_latlon": [
+  18.102,
+  -65.446
+ ],
+ "projection": "+proj=aeqd +lat_0=18.102 +lon_0=-65.4451 +datum=WGS84 +units=m",
+ "frame": "x = east (m); z = SOUTH (m), north is -z; y = elevation above mean sea level (m). Rows run north->south (row 0 = most negative z), columns west->east; values are cell-centre samples: x = x0+(i+0.5)dx, z = z0+(j+0.5)dz.",
+ "horizontal_datum_note": "Sources are NAD83 / NAD83(2011); the site frame uses WGS84. PROJ applies a null shift (NAD83 ~ WGS84 to 1-2 m in Puerto Rico); ignored.",
+ "grids": {
+  "near": {
+   "nx": 1000,
+   "nz": 750,
+   "dx": 4.0,
+   "dz": 4.0,
+   "x0": -2000.0,
+   "z0": -1000.0,
+   "window_x_m": [
+    -2000.0,
+    2000.0
+   ],
+   "window_z_m": [
+    -1000.0,
+    2000.0
+   ],
+   "min_m": -20.94,
+   "max_m": 39.47,
+   "mean_m": 2.34,
+   "water_fraction": 0.4591,
+   "land_fraction": 0.5409,
+   "nodata_filled_cells": 0,
+   "nodata_filled_fraction": 0.0,
+   "clamped_fraction": 0.0,
+   "denoise_sigma_cells": null,
+   "file": "mosquito_near.i16",
+   "dtype": "int16 little-endian",
+   "unit": "centimetres above MSL",
+   "row_order": "north->south",
+   "source": "CUDEM native-resolution window",
+   "resampling": "gdalwarp -r bilinear (kernel scaled to 4 m), aeqd"
+  },
+  "far": {
+   "nx": 700,
+   "nz": 500,
+   "dx": 20.0,
+   "dz": 20.0,
+   "x0": -7000.0,
+   "z0": -4500.0,
+   "window_x_m": [
+    -7000.0,
+    7000.0
+   ],
+   "window_z_m": [
+    -4500.0,
+    5500.0
+   ],
+   "min_m": -327.0,
+   "max_m": 179.62,
+   "mean_m": -20.01,
+   "water_fraction": 0.5468,
+   "land_fraction": 0.4532,
+   "nodata_filled_cells": 0,
+   "nodata_filled_fraction": 0.0,
+   "clamped_fraction": 0.0786,
+   "denoise_sigma_cells": null,
+   "file": "mosquito_far.i16",
+   "dtype": "int16 little-endian",
+   "unit": "centimetres above MSL",
+   "row_order": "north->south",
+   "source": "CUDEM 2x overview level (6.9 m)",
+   "resampling": "gdalwarp -r bilinear (kernel scaled to 20 m), aeqd"
+  }
+ },
+ "vertical": {
+  "datum": "PRVD02 (orthometric), treated as mean sea level; sea level = 0 m. NOAA VDatum offsets PRVD02<->local MSL are ~0.1 m or less (not applied). Storage: Int16 little-endian centimetres, clamped to +-327.00 m (far grid: deeper cells are clamped)."
+ },
+ "processing": {
+  "resampling_method": "bilinear",
+  "denoise": "NOT applied (measured seabed high-pass noise ~1-2 cm rms)",
+  "nodata": "NoData cells are filled: offshore = nearest valid depth extrapolated seaward at 0.02 m/m (keeps deepening, floor -320 m); land = Laplace interpolation. Filled fractions are in grids.*.nodata_filled_fraction (0 for these windows).",
+  "network_bytes": {
+   "bytes_this_run": 0,
+   "cudem_near_bytes": 6192082,
+   "cudem_far_bytes": 13058048,
+   "lidar_overview_bytes": 3653632
+  }
+ },
+ "sources": [
+  {
+   "id": "cudem_1_9_arcsec_puerto_rico",
+   "role": "PRIMARY - every value in the near and far grids",
+   "title": "Puerto Rico: Continuously Updated Digital Elevation Model (CUDEM) - 1/9 Arc-Second Resolution Bathymetric-Topographic Tiles",
+   "publisher": "NOAA National Centers for Environmental Information (NCEI); author CIRES, University of Colorado Boulder",
+   "doi": "10.25921/ds9v-ky35",
+   "ncei_metadata_id": "gov.noaa.ngdc.mgg.dem:399919",
+   "dataset_pages": [
+    "https://doi.org/10.25921/ds9v-ky35",
+    "https://coast.noaa.gov/dataviewer/#/lidar/search/where:ID=9525",
+    "https://www.ncei.noaa.gov/metadata/geoportal/rest/metadata/item/gov.noaa.ngdc.mgg.dem:399919/html"
+   ],
+   "tiles": [
+    {
+     "name": "ncei19_n18x25_w065x50_2022v2.tif",
+     "url": "https://noaa-nos-coastal-lidar-pds.s3.amazonaws.com/dem/NCEI_ninth_Topobathy_PuertoRico_9525/ncei19_n18x25_w065x50_2022v2.tif",
+     "bytes_full_tile": 174374581,
+     "s3_last_modified": "2024-01-05",
+     "covers": "lon -65.50..-65.25, lat 18.00..18.25 (+6 px buffer)"
+    },
+    {
+     "name": "ncei19_n18x25_w065x75_2022v2.tif",
+     "url": "https://noaa-nos-coastal-lidar-pds.s3.amazonaws.com/dem/NCEI_ninth_Topobathy_PuertoRico_9525/ncei19_n18x25_w065x75_2022v2.tif",
+     "bytes_full_tile": 192828601,
+     "s3_last_modified": "2024-01-05",
+     "covers": "lon -65.75..-65.50, lat 18.00..18.25 (+6 px buffer); only used for the western edge of the Mosquito far window"
+    }
+   ],
+   "version": "2022v2 (GeoTIFF DATETIME tag 2022-06-03; ISO publication date 2022-06-11)",
+   "horizontal_crs": "NAD83 geographic (EPSG:4269), pixel size 1/9 arc-second = 3.0864197e-5 deg (~3.4 m N-S, ~3.3 m E-W at 18.1 N), pixel-is-area",
+   "vertical_datum": "PRVD02 height (Puerto Rico Vertical Datum of 2002, EPSG:6641), orthometric metres; treated as mean sea level (no shift applied)",
+   "format": "Cloud-Optimized GeoTIFF, float32, DEFLATE + floating-point predictor, 512x512 blocks, 4 overviews (2x,4x,8x,16x), NoData -9999",
+   "read_method": "GDAL /vsicurl/ range reads through a local VRT of the two tiles. NEAR window: native pixels (no resampling on the way in). FAR window: the COG 2x overview level (6.9 m; the provider's overview was verified to be a bicubic decimation of the native data, rms 2 mm).",
+   "windows_read": {
+    "near": {
+     "srcwin": [
+      9257,
+      4494,
+      1262,
+      914
+     ],
+     "bytes": 6192082
+    },
+    "far": {
+     "srcwin": [
+      7698,
+      3442,
+      4380,
+      3018
+     ],
+     "level": 2,
+     "bytes": 13058048
+    }
+   },
+   "gap_filling_by_source": "CUDEM is a gap-free merged product (bathymetry + topography); its interpolation of unconstrained cells is documented in the NCEI DEM technical reports.",
+   "citation": "Cooperative Institute for Research in Environmental Sciences (CIRES) at the University of Colorado, Boulder. 2014: Continuously Updated Digital Elevation Model (CUDEM) - 1/9 Arc-Second Resolution Bathymetric-Topographic Tiles [Puerto Rico tiles ncei19_n18x25_w065x50 and ncei19_n18x25_w065x75, window subsets]. NOAA National Centers for Environmental Information. https://doi.org/10.25921/ds9v-ky35. Accessed 2026-09-30.",
+   "licence": "Produced by NOAA NCEI; not subject to copyright protection within the United States. NOAA/NCEI give no warranty on accuracy; NOT FOR NAVIGATION (use NOS nautical charts).",
+   "stated_accuracy": "Horizontal ~1 m (source data); vertical better than 0.5 m RMSE for lidar topography; bathymetric accuracy varies; no quantitative tile-level assessment published."
+  },
+  {
+   "id": "ngs_2019_topobathy_lidar_dem_puerto_rico",
+   "role": "CROSS-CHECK ONLY (validation statistics; not merged into any product)",
+   "title": "2019 NOAA NGS Topobathy Lidar DEM: Puerto Rico (NOAA Digital Coast dataset ID 9392; blocks pr_block_B/pr_block_C cover Vieques)",
+   "acquisition": "2019-01-20 to 2019-06-02, Leading Edge Geomatics, Riegl VQ-880-G II topobathymetric lidar (post-Hurricane Maria)",
+   "dataset_pages": [
+    "https://coast.noaa.gov/dataviewer/#/lidar/search/where:ID=9392",
+    "https://noaa-nos-coastal-lidar-pds.s3.amazonaws.com/dem/NGS_PR_Topobathy_DEM_2019_9392/"
+   ],
+   "tile_index": "https://noaa-nos-coastal-lidar-pds.s3.amazonaws.com/dem/NGS_PR_Topobathy_DEM_2019_9392/tileindex_NGS_PR_Topobathy_DEM_2019.zip",
+   "tiles_used": [
+    "2019_873300e_2004500n_dem.tif",
+    "2019_873300e_2005500n_dem.tif",
+    "2019_874300e_2003500n_dem.tif",
+    "2019_874300e_2004500n_dem.tif",
+    "2019_874300e_2005500n_dem.tif",
+    "2019_874300e_2006500n_dem.tif",
+    "2019_875300e_2003500n_dem.tif",
+    "2019_875300e_2004500n_dem.tif",
+    "2019_875300e_2005500n_dem.tif",
+    "2019_875300e_2006500n_dem.tif",
+    "2019_876300e_2003500n_dem.tif",
+    "2019_876300e_2004500n_dem.tif",
+    "2019_876300e_2005500n_dem.tif",
+    "2019_876300e_2006500n_dem.tif",
+    "2019_877300e_2003500n_dem.tif",
+    "2019_877300e_2004500n_dem.tif",
+    "2019_877300e_2005500n_dem.tif",
+    "2019_877300e_2006500n_dem.tif",
+    "2019_878300e_2003500n_dem.tif",
+    "2019_878300e_2004500n_dem.tif",
+    "2019_878300e_2005500n_dem.tif",
+    "2019_878300e_2006500n_dem.tif"
+   ],
+   "tile_urls": [
+    "https://noaa-nos-coastal-lidar-pds.s3.us-east-1.amazonaws.com/dem/NGS_PR_Topobathy_DEM_2019_9392/pr_block_C/2019_873300e_2004500n_dem.tif",
+    "https://noaa-nos-coastal-lidar-pds.s3.us-east-1.amazonaws.com/dem/NGS_PR_Topobathy_DEM_2019_9392/pr_block_C/2019_873300e_2005500n_dem.tif",
+    "https://noaa-nos-coastal-lidar-pds.s3.us-east-1.amazonaws.com/dem/NGS_PR_Topobathy_DEM_2019_9392/pr_block_C/2019_874300e_2003500n_dem.tif",
+    "https://noaa-nos-coastal-lidar-pds.s3.us-east-1.amazonaws.com/dem/NGS_PR_Topobathy_DEM_2019_9392/pr_block_C/2019_874300e_2004500n_dem.tif",
+    "https://noaa-nos-coastal-lidar-pds.s3.us-east-1.amazonaws.com/dem/NGS_PR_Topobathy_DEM_2019_9392/pr_block_C/2019_874300e_2005500n_dem.tif",
+    "https://noaa-nos-coastal-lidar-pds.s3.us-east-1.amazonaws.com/dem/NGS_PR_Topobathy_DEM_2019_9392/pr_block_C/2019_874300e_2006500n_dem.tif",
+    "https://noaa-nos-coastal-lidar-pds.s3.us-east-1.amazonaws.com/dem/NGS_PR_Topobathy_DEM_2019_9392/pr_block_C/2019_875300e_2003500n_dem.tif",
+    "https://noaa-nos-coastal-lidar-pds.s3.us-east-1.amazonaws.com/dem/NGS_PR_Topobathy_DEM_2019_9392/pr_block_C/2019_875300e_2004500n_dem.tif",
+    "https://noaa-nos-coastal-lidar-pds.s3.us-east-1.amazonaws.com/dem/NGS_PR_Topobathy_DEM_2019_9392/pr_block_C/2019_875300e_2005500n_dem.tif",
+    "https://noaa-nos-coastal-lidar-pds.s3.us-east-1.amazonaws.com/dem/NGS_PR_Topobathy_DEM_2019_9392/pr_block_C/2019_875300e_2006500n_dem.tif",
+    "https://noaa-nos-coastal-lidar-pds.s3.us-east-1.amazonaws.com/dem/NGS_PR_Topobathy_DEM_2019_9392/pr_block_C/2019_876300e_2003500n_dem.tif",
+    "https://noaa-nos-coastal-lidar-pds.s3.us-east-1.amazonaws.com/dem/NGS_PR_Topobathy_DEM_2019_9392/pr_block_C/2019_876300e_2004500n_dem.tif",
+    "https://noaa-nos-coastal-lidar-pds.s3.us-east-1.amazonaws.com/dem/NGS_PR_Topobathy_DEM_2019_9392/pr_block_C/2019_876300e_2005500n_dem.tif",
+    "https://noaa-nos-coastal-lidar-pds.s3.us-east-1.amazonaws.com/dem/NGS_PR_Topobathy_DEM_2019_9392/pr_block_C/2019_876300e_2006500n_dem.tif",
+    "https://noaa-nos-coastal-lidar-pds.s3.us-east-1.amazonaws.com/dem/NGS_PR_Topobathy_DEM_2019_9392/pr_block_C/2019_877300e_2003500n_dem.tif",
+    "https://noaa-nos-coastal-lidar-pds.s3.us-east-1.amazonaws.com/dem/NGS_PR_Topobathy_DEM_2019_9392/pr_block_C/2019_877300e_2004500n_dem.tif",
+    "https://noaa-nos-coastal-lidar-pds.s3.us-east-1.amazonaws.com/dem/NGS_PR_Topobathy_DEM_2019_9392/pr_block_C/2019_877300e_2005500n_dem.tif",
+    "https://noaa-nos-coastal-lidar-pds.s3.us-east-1.amazonaws.com/dem/NGS_PR_Topobathy_DEM_2019_9392/pr_block_C/2019_877300e_2006500n_dem.tif",
+    "https://noaa-nos-coastal-lidar-pds.s3.us-east-1.amazonaws.com/dem/NGS_PR_Topobathy_DEM_2019_9392/pr_block_C/2019_878300e_2003500n_dem.tif",
+    "https://noaa-nos-coastal-lidar-pds.s3.us-east-1.amazonaws.com/dem/NGS_PR_Topobathy_DEM_2019_9392/pr_block_C/2019_878300e_2004500n_dem.tif",
+    "https://noaa-nos-coastal-lidar-pds.s3.us-east-1.amazonaws.com/dem/NGS_PR_Topobathy_DEM_2019_9392/pr_block_C/2019_878300e_2005500n_dem.tif",
+    "https://noaa-nos-coastal-lidar-pds.s3.us-east-1.amazonaws.com/dem/NGS_PR_Topobathy_DEM_2019_9392/pr_block_C/2019_878300e_2006500n_dem.tif"
+   ],
+   "horizontal_crs": "NAD83 / UTM zone 19N (EPSG:26919), 1 m pixels, float32 COG (DEFLATE), 512x512 blocks, overviews 2 m and 4 m",
+   "vertical_datum": "not encoded in the GeoTIFF; NGS/CUDEM practice = PRVD02 (assumed)",
+   "read_method": "gdalwarp -ovr 1 from /vsicurl/ tiles: 4 m overview level (verified to equal the exact 2x2-of-2x2 box average of the 1 m data), bilinear to the site grid",
+   "bytes": 3653632,
+   "licence": "Public NOAA data (STAC licence tag 'NLPL'); please credit NOAA National Geodetic Survey / Office for Coastal Management",
+   "why_not_the_requested_2016_set": "The 2016 NOAA NGS topobathy DEM (dataset 8462, incl. Culebra) and the 2015 set (6211) have no tiles over these Vieques sites; the 2019 NGS set (9392) and the 2018 USACE/FEMA set (8571) do."
+  },
+  {
+   "id": "openstreetmap_overpass",
+   "role": "sparse features + coastline cross-check",
+   "url": "https://overpass-api.de/api/interpreter",
+   "licence": "ODbL 1.0 - (c) OpenStreetMap contributors"
+  }
+ ],
+ "metrics": {
+  "primary": "depth_ge_0p5m",
+  "depth_ge_0p5m": {
+   "threshold_m": -0.5,
+   "lagoon_centroid_xz": [
+    1.7,
+    -0.5
+   ],
+   "lagoon_bbox_x_m": [
+    -648.0,
+    584.0
+   ],
+   "lagoon_bbox_z_m": [
+    -320.0,
+    400.0
+   ],
+   "lagoon_area_ha": 61.7,
+   "lagoon_major_length_m": 1233.0,
+   "lagoon_minor_width_m": 678.0,
+   "depth_mean_m": 1.8,
+   "depth_median_m": 1.39,
+   "depth_max_m": 4.04,
+   "max_depth_xz": [
+    2.0,
+    78.0
+   ],
+   "volume_m3": 1109671.0,
+   "inlet_neck_xz": [
+    526.0,
+    398.0
+   ],
+   "inlet_neck_width_m": 78.8,
+   "inlet_neck_thalweg_depth_m": 1.83,
+   "inlet_channel_start_xz": [
+    426.0,
+    306.0
+   ],
+   "inlet_channel_end_xz": [
+    442.0,
+    830.0
+   ],
+   "inlet_channel_length_m": 628.0,
+   "inlet_channel_width_range_m": [
+    79.0,
+    198.0
+   ],
+   "inlet_channel_definition": "thalweg stretch around the neck where local width (2 x inscribed radius) < 200 m",
+   "lagoon_definition": "water body that survives an opening by 100 m radius, grown back by 100 m inside the water mask",
+   "latlon": {
+    "lagoon_centroid": [
+     18.102,
+     -65.44508
+    ],
+    "inlet_neck": [
+     18.0984,
+     -65.44013
+    ],
+    "inlet_channel_start": [
+     18.09924,
+     -65.44108
+    ],
+    "inlet_channel_end": [
+     18.0945,
+     -65.44092
+    ],
+    "lagoon_bbox_sw": [
+     18.09839,
+     -65.45122
+    ],
+    "lagoon_bbox_ne": [
+     18.10489,
+     -65.43958
+    ]
+   },
+   "lidar_void_in_lagoon": {
+    "area_ha": 3.64,
+    "fraction_of_lagoon_area": 0.059,
+    "centroid_xz": [
+     110.8,
+     106.9
+    ],
+    "cudem_depth_mean_m": 3.57,
+    "cudem_depth_max_m": 4.04
+   },
+   "cudem_minus_lidar_in_lagoon_where_both_valid": {
+    "n": 36263,
+    "mean_m": 0.063,
+    "rms_m": 0.101
+   }
+  },
+  "water_z_lt_0": {
+   "threshold_m": 0.0,
+   "lagoon_centroid_xz": [
+    -1.3,
+    1.9
+   ],
+   "lagoon_bbox_x_m": [
+    -656.0,
+    588.0
+   ],
+   "lagoon_bbox_z_m": [
+    -324.0,
+    408.0
+   ],
+   "lagoon_area_ha": 63.9,
+   "lagoon_major_length_m": 1246.0,
+   "lagoon_minor_width_m": 688.0,
+   "depth_mean_m": 1.76,
+   "depth_median_m": 1.34,
+   "depth_max_m": 4.04,
+   "max_depth_xz": [
+    2.0,
+    78.0
+   ],
+   "volume_m3": 1121679.0,
+   "inlet_neck_xz": [
+    522.0,
+    398.0
+   ],
+   "inlet_neck_width_m": 89.4,
+   "inlet_neck_thalweg_depth_m": 1.75,
+   "inlet_channel_start_xz": [
+    430.0,
+    306.0
+   ],
+   "inlet_channel_end_xz": [
+    446.0,
+    822.0
+   ],
+   "inlet_channel_length_m": 608.0,
+   "inlet_channel_width_range_m": [
+    89.0,
+    199.0
+   ],
+   "inlet_channel_definition": "thalweg stretch around the neck where local width (2 x inscribed radius) < 200 m",
+   "lagoon_definition": "water body that survives an opening by 100 m radius, grown back by 100 m inside the water mask"
+  },
+  "extremes_near": {
+   "max_elevation_m": 39.47,
+   "max_elevation_xz": [
+    -254.0,
+    590.0
+   ],
+   "min_elevation_m": -20.94,
+   "min_elevation_xz": [
+    1998.0,
+    1998.0
+   ]
+  },
+  "other_enclosed_water_bodies_near": [
+   {
+    "centroid_xz": [
+     -1059.7,
+     254.4
+    ],
+    "area_ha": 36.59,
+    "mean_depth_m": 0.07,
+    "max_depth_m": 0.18
+   },
+   {
+    "centroid_xz": [
+     646.7,
+     -403.2
+    ],
+    "area_ha": 1.23,
+    "mean_depth_m": 0.23,
+    "max_depth_m": 0.42
+   },
+   {
+    "centroid_xz": [
+     -331.0,
+     1138.9
+    ],
+    "area_ha": 0.39,
+    "mean_depth_m": 0.03,
+    "max_depth_m": 0.05
+   }
+  ],
+  "low_land_sensitivity_near": {
+   "land_0_to_0.1_m_ha": 18.3,
+   "land_0.1_to_0.25_m_ha": 48.4,
+   "land_0.25_to_0.5_m_ha": 28.2,
+   "land_0.5_to_1_m_ha": 27.1,
+   "window_area_ha": 1200.0
+  }
+ },
+ "crosscheck_vs_ngs2019_lidar": {
+  "n_cells": 731269,
+  "coverage_fraction_of_window": 0.975,
+  "mean_diff_m": 0.099,
+  "median_diff_m": 0.078,
+  "rms_diff_m": 0.181,
+  "rms_after_removing_mean_m": 0.151,
+  "p2_p98_diff_m": [
+   -0.153,
+   0.476
+  ],
+  "max_abs_diff_m": 5.6,
+  "by_lidar_elevation_class_m": {
+   "z<-20": {
+    "n": 52,
+    "mean": 0.101,
+    "rms": 0.183
+   },
+   "-20..-10": {
+    "n": 79425,
+    "mean": 0.137,
+    "rms": 0.257
+   },
+   "-10..-5": {
+    "n": 88546,
+    "mean": 0.185,
+    "rms": 0.273
+   },
+   "-5..-2": {
+    "n": 75989,
+    "mean": 0.126,
+    "rms": 0.182
+   },
+   "-2..0": {
+    "n": 94265,
+    "mean": 0.062,
+    "rms": 0.145
+   },
+   "0..2": {
+    "n": 107017,
+    "mean": 0.076,
+    "rms": 0.12
+   },
+   "2..10": {
+    "n": 137910,
+    "mean": 0.097,
+    "rms": 0.167
+   },
+   ">10": {
+    "n": 148065,
+    "mean": 0.057,
+    "rms": 0.119
+   }
+  },
+  "lidar_void_fraction_by_cudem_elevation_class_m": {
+   "deeper than -20": 0.918,
+   "-20..-15": 0.038,
+   "-15..-10": 0.028,
+   "-10..-5": 0.007,
+   "-5..0": 0.036,
+   "land": 0.021
+  },
+  "by_slope": {
+   "slope<0.1": {
+    "n": 609501,
+    "rms": 0.156,
+    "mean": 0.098
+   },
+   "0.1..0.4": {
+    "n": 113204,
+    "rms": 0.24,
+    "mean": 0.102
+   },
+   ">0.4": {
+    "n": 8564,
+    "rms": 0.533,
+    "mean": 0.167
+   }
+  },
+  "worst_100m_blocks": [
+   {
+    "centre_xz": [
+     50,
+     1350
+    ],
+    "rms_m": 0.62,
+    "mean_diff_m": 0.36,
+    "mean_cudem_elevation_m": -2.4,
+    "max_abs_m": 3.53
+   },
+   {
+    "centre_xz": [
+     -850,
+     1650
+    ],
+    "rms_m": 0.57,
+    "mean_diff_m": 0.28,
+    "mean_cudem_elevation_m": 6.1,
+    "max_abs_m": 5.29
+   },
+   {
+    "centre_xz": [
+     -950,
+     1650
+    ],
+    "rms_m": 0.56,
+    "mean_diff_m": 0.21,
+    "mean_cudem_elevation_m": 4.1,
+    "max_abs_m": 5.6
+   },
+   {
+    "centre_xz": [
+     50,
+     1750
+    ],
+    "rms_m": 0.54,
+    "mean_diff_m": 0.25,
+    "mean_cudem_elevation_m": -9.3,
+    "max_abs_m": 1.66
+   },
+   {
+    "centre_xz": [
+     150,
+     1750
+    ],
+    "rms_m": 0.53,
+    "mean_diff_m": 0.26,
+    "mean_cudem_elevation_m": -9.6,
+    "max_abs_m": 1.69
+   },
+   {
+    "centre_xz": [
+     -450,
+     1750
+    ],
+    "rms_m": 0.52,
+    "mean_diff_m": 0.2,
+    "mean_cudem_elevation_m": -7.8,
+    "max_abs_m": 2.16
+   }
+  ],
+  "largest_single_cell_diff": {
+   "xz": [
+    -914,
+    1634
+   ],
+   "diff_m": 5.6,
+   "cudem_m": 12.63,
+   "lidar_m": 7.03
+  }
+ },
+ "verification": {
+  "georeference_vs_source_raster": {
+   "cells_checked": 400,
+   "gentle_cells": 273,
+   "median_abs_diff_m_gentle": 0.015,
+   "p95_abs_diff_m_gentle": 0.077,
+   "max_abs_diff_m_all": 0.64
+  },
+  "near_vs_far_consistency": {
+   "cells": 30000,
+   "mean_far_minus_near_m": -0.001,
+   "rms_m": 0.082,
+   "p95_abs_m": 0.154,
+   "note": "far (20 m, from the 6.9 m COG overview) minus 5x5 block mean of the near grid, over the near window"
+  }
+ },
+ "osm": {
+  "file": "osm_mosquito.json",
+  "counts": {
+   "roads": 41,
+   "structures_all": 0,
+   "structures_kept": 0,
+   "coastline": 6
+  },
+  "coast_check": {
+   "n": 4010,
+   "median_dem_elevation_m": 0.08,
+   "p10_p90_dem_elevation_m": [
+    -0.6,
+    3.36
+   ]
+  },
+  "note": "Sparse features only; structures limited to 3; coastline is included for cross-checking against the DEM 0 m contour."
+ },
+ "built_utc": "2026-09-30T04:43:44+00:00",
+ "credits": "Bathymetry/topography: NOAA NCEI CUDEM (public domain). Cross-check: NOAA NGS 2019 topobathy lidar. Map features: (c) OpenStreetMap contributors (ODbL).",
+ "caveats": [
+  "CUDEM is ~+0.10 m higher than the independent 2019 NGS lidar DEM on average (rms 0.181 m, 0.151 m after removing the mean): a small vertical-datum/gridding offset, not a shape error. Absolute sea level (PRVD02 vs true local MSL) is uncertain to ~0.1 m.",
+  "Elevations are bare-earth (lidar ground + bathymetric bottom): no canopy signal was found (land high-pass roughness 4-5 cm rms in mangrove/dune fringe, hillsides and backshore alike). There is no water surface: a lidar 'lake' is just the seabed/ground value beneath it.",
+  "Wet/dry sensitivity: 18 ha of the near window lies 0-0.1 m and 48 ha lies 0.1-0.25 m above sea level; with a datum uncertainty of ~0.1 m the 0 m shoreline is poorly defined on such flats (tens of metres to >100 m of horizontal shift).",
+  "Where CUDEM and the lidar disagree most: (1) steep rocky headlands and reef fronts (slope > 0.4: rms 0.533 m; 1-2 m horizontal misregistration between the two gridded sources), (2) inland forested hillsides (patchy +-0.3-0.6 m swath/tile texture in one of the sources), (3) a smooth systematic offshore offset: CUDEM is +0.13..+0.18 m shallower than the lidar between -2 and -10 m, growing with depth (largest ~+0.2 m at -10..-15 m).",
+  "Lidar coverage: the 2019 lidar has voids where it did not see the bottom (fraction of CUDEM cells with no lidar: 0.918 deeper than -20 m, 0.038 at -20..-15 m, 0.028 at -15..-10 m). Deeper than ~-20 m CUDEM is therefore unverified by this lidar (multibeam/other sources or interpolation).",
+  "Data are a 2018-2019 (post-Hurricane Maria) snapshot; sand bars, berms and the shoreline change with storms and tides. At beach slopes of ~1:15 a 0.15 m tide/wave-setup difference moves the 0 m line ~2 m.",
+  "Far grid: 7.9 % of cells are deeper than -327 m and are clamped to -327 m (Int16 cm range). Deep water is irrelevant for the demo but the slope beyond the shelf break is truncated.",
+  "Seabed high-pass noise is only ~1-2 cm rms at 4 m (no striping, tile seams or voids seen in the near windows); the far grid is built from the COG's 2x overview (bicubic decimation by the provider), so features < ~14 m are smoothed.",
+  "Horizontal datum: NAD83/NAD83(2011) sources and WGS84 frame treated as identical (PROJ null shift; real offset ~1-2 m, below the 4 m grid).",
+  "An enclosed pond west of the lagoon (37 ha at x=-1060, z=254; local name Laguna Kiani) is a near-zero-depth salt flat (max depth 0.18 m): it will flicker wet/dry in a shallow-water solver and is NOT counted as the lagoon.",
+  "The inlet neck is 79 m wide (water deeper than 0.5 m; 89 m at the 0 m level) and the channel is 628 m long: wider than a 'narrow' mangrove channel one might expect, because the shallow flats flanking the thalweg are below 0 m.",
+  "The 2019 lidar has a 3.6 ha void (6 % of the lagoon) over the deepest part of the lagoon (centre x=111, z=107; no bottom return in the turbid/deep water). CUDEM has values there (mean depth 3.6 m, max 4.0 m) that are interpolated or from other data, so the lagoon's maximum depth is the least certain number. Elsewhere in the lagoon CUDEM and lidar agree to 0.10 m rms.",
+  "The lagoon's north and west margins are a very flat 0.0-0.2 m band (mangrove/salt-flat ground) 100-150 m wide before the land rises: the shoreline there moves by ~100 m for a 0.1 m datum change."
+ ]
+}
