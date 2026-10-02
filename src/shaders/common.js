@@ -454,12 +454,22 @@ fn surfAt(p : vec2<f32>, t : f32, soft : f32) -> Surf {
   let n = vnoise4(p * 0.012 + vec2<f32>(4.1, 7.3)); let n2 = vnoise4(p * 0.05 + vec2<f32>(1.7, 2.9));
   let si = shoreInfo(p);                                             // exposure: big surf on open shores, little in the lee of islets and headlands
   let A = surfSets(p, t) * smoothstep(-55.0, -18.0, sd) * (1.0 - smoothstep(-3.0, 8.0, sd)) * mix(0.10, 1.15, si.x);
-  let x = sd + 9.0 * (n.r - 0.5) + 2.0 * (n2.b - 0.5);                // wavy fronts
+  let n3 = vnoise4(p * 0.0045 + vec2<f32>(9.2, 2.6));
+  let x = sd + 9.0 * (n.r - 0.5) + 2.0 * (n2.b - 0.5) + 22.0 * (n3.g - 0.5);   // wavy fronts, and crests that wrap unevenly around points
   let u = (t * SURF_L / SURF_T - x) / SURF_L;                          // the crest is where u is a whole number; it moves inland
   let w = clamp(soft / SURF_L, 0.04, 0.5);
   let e = 0.01;
-  o.h = A * surfShape(u, w);
-  o.dh = -A * (surfShape(u + e, w) - surfShape(u - e, w)) / (2.0 * e * SURF_L);
+  // every wave is different: its height (some barely break), and which sections of its crest are breaking. Offshore only a few sections break
+  // (over shallower bottom, as peaks); the broken sections spread along the crest as it moves into shallower water, so a wave peels and closes
+  // out near the beach instead of arriving as one even ring.
+  let k = floor(u);
+  let Ak = A * (0.35 + 0.95 * hash21(vec2<f32>(k, 7.31)));
+  let inshore = smoothstep(-45.0, -16.0, sd);
+  let sec = vnoise4(p * 0.016 + vec2<f32>(k * 3.71, k * 1.93)).r * 0.75 + vnoise4(p * 0.05 + vec2<f32>(k * 2.3, 0.7)).g * 0.25;
+  let thr = mix(0.64, 0.02, inshore) + 0.15 * (0.6 - Ak / max(A, 1e-4));
+  let broken = smoothstep(thr - 0.10, thr + 0.10, sec);
+  o.h = Ak * surfShape(u, w) * (0.55 + 0.45 * broken);               // an unbroken swell is a smoother, lower hump
+  o.dh = -Ak * (0.55 + 0.45 * broken) * (surfShape(u + e, w) - surfShape(u - e, w)) / (2.0 * e * SURF_L);
   let s = fract(u);
   // white water: a dense band a couple of metres wide just behind the face, then lace (a network of foam veins with clear water between them)
   // that thins out over the bore's back. The lace drifts slowly so it does not read as a fixed pattern under the moving bore.
@@ -476,7 +486,8 @@ fn surfAt(p : vec2<f32>, t : f32, soft : f32) -> Surf {
     lace *= 0.75 + 0.35 * smoothstep(0.0, 0.25, cellEdge(dq * 3.5)) * (1.0 - smoothstep(0.2, 0.5, soft));
   }
   lace *= exp(-s * 1.8) * smoothstep(0.0, w, s);
-  o.foam = zone * (dense + 0.8 * lace) * (1.0 + 0.8 * si.y);            // breaking on a rocky shore throws up more white water
+  // white water only behind the broken sections (and less behind a small wave); breaking on a rocky shore throws up more of it
+  o.foam = zone * (dense * broken + 0.8 * lace * max(broken, 0.25 * inshore)) * smoothstep(0.0, 0.10, Ak) * (1.0 + 0.8 * si.y);
   return o;
 }
 
