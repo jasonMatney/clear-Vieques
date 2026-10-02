@@ -23,6 +23,32 @@ fn crownField(p : vec2<f32>, size : f32) -> vec4<f32> {
   return vec4<f32>(sqrt(best), id, vc);
 }
 
+// ---- foliage micro-structure. A canopy is not a smooth dome: it is leaf clusters piled in clusters of clusters, lit on top and dark between.
+// CV.makeFoliageTexture bakes that structure (see src/foliage.js); three octaves of it (tile 20 m, 6.4 m, 2 m: clusters of ~3 m, ~1 m, ~0.3 m with finer
+// structure inside) give each crown pixel a surface slope (g, d height / d position), an occlusion term (ao: low between clusters, mean 1) and a leaf
+// tint. The explicit mip level follows the pixel footprint, so detail finer than a pixel averages out (no shimmer, no brightness change at range).
+struct Foliage { ao : f32, g : vec2<f32>, tone : f32 };
+fn foliageOct(p : vec2<f32>, tile : f32, cs : vec2<f32>, off : vec2<f32>, foot : f32, slope : f32) -> vec4<f32> {   // (ao, gx, gz, tone)
+  let lod = log2(max(foot * 256.0 / tile, 1e-3)) - 0.4;
+  if (lod > 6.5) { return vec4<f32>(1.0, 0.0, 0.0, 0.0); }
+  let q = vec2<f32>(cs.x * p.x - cs.y * p.y, cs.y * p.x + cs.x * p.y) / tile + off;
+  let t = textureSampleLevel(foliageTex, samRep, q, max(lod, 0.0));
+  let g = (t.rg * 2.0 - 1.0) * slope;
+  let fade = 1.0 - smoothstep(4.0, 6.5, lod);
+  return vec4<f32>(mix(1.0, 0.40 + 0.90 * sqrt(t.b), fade), cs.x * g.x + cs.y * g.y, -cs.y * g.x + cs.x * g.y, (t.a - 0.5) * fade);
+}
+fn foliage(p : vec2<f32>, foot : f32, seed : f32) -> Foliage {
+  let o = vec2<f32>(seed, seed * 0.61);
+  let a = foliageOct(p, 20.0, vec2<f32>(0.9394, 0.3429), o, foot, 0.90);
+  let b = foliageOct(p, 6.4, vec2<f32>(0.4536, 0.8912), o + 7.3, foot, 0.70);
+  let c = foliageOct(p, 2.0, vec2<f32>(-0.4688, 0.8833), o + 3.1, foot, 0.45);
+  var f : Foliage;
+  f.ao = a.x * b.x * c.x;
+  f.g = a.yz + b.yz + c.yz;
+  f.tone = a.w * 0.9 + b.w * 0.7 + c.w * 0.5;
+  return f;
+}
+
 fn sandAlbedo(p : vec2<f32>, dist : f32) -> vec3<f32> {
   let n1 = vnoise4(p * 0.028);
   let n2 = fadeN(vnoise4(p * 0.35), dist, 40.0, 300.0);
@@ -68,11 +94,12 @@ fn landClass(pxz : vec2<f32>, n : vec3<f32>, aux : vec4<f32>, dist : f32) -> Lan
   return c;
 }
 
-struct LandMat { albedo : vec3<f32>, sandW : f32, rockW : f32, canopy : f32, nAdd : vec3<f32>, occ : f32 };
+var<private> gHole : f32 = 0.0;        // set by shadeLand: 1 where the leafy fringe of a crown lets open sky show through (the terrain pass paints the sky there; no discard, which would defeat tile-based hidden-surface removal)
+struct LandMat { albedo : vec3<f32>, sandW : f32, rockW : f32, canopy : f32, nAdd : vec3<f32>, occ : f32, leaf : f32, hTop : f32, rim : f32 };
 
 fn landMaterial(pxz : vec2<f32>, n : vec3<f32>, V : vec3<f32>, dist : f32, c : LandCls) -> LandMat {
   // dry-forest palette (linear reflectance), a little muted: this is a tropical dry forest in the trades, not a rainforest
-  let leafGreen = vec3<f32>(0.040, 0.055, 0.026);
+  let leafGreen = vec3<f32>(0.046, 0.066, 0.026);
   let leafDark = vec3<f32>(0.018, 0.029, 0.014);
   let leafDry = vec3<f32>(0.098, 0.083, 0.050);
   let seaGrape = vec3<f32>(0.056, 0.090, 0.030);
@@ -81,11 +108,12 @@ fn landMaterial(pxz : vec2<f32>, n : vec3<f32>, V : vec3<f32>, dist : f32, c : L
 
   let cr = crownAt(pxz);
   let treeFrac = meanCanopy(pxz).y;
-  // ground metres covered by one pixel along the view: individual crowns (~3 m radius) are drawn only where they are resolved, otherwise the stand mean
-  let foot = dist * G.camFwd.w / max(dot(n, V), 0.12);
-  let resolved = 1.0 - smoothstep(1.0, 3.6, foot);
+  // metres covered by one pixel on the foliage: individual crowns (~3-5 m radius) are drawn only where they are resolved, otherwise the stand mean.
+  // Crowns bulge toward the viewer, so unlike bare ground their footprint does not stretch at grazing angles (the cap on 1/cos is mild).
+  let foot = dist * G.camFwd.w / max(dot(n, V), 0.45);
+  let resolved = 1.0 - smoothstep(1.8, 5.5, foot);
   let hasCrown = cr.H > 0.5;
-  let rr = length(pxz - cr.c) / cr.R;
+  let rr = crownRad(pxz, cr);
   let inCrown = select(0.0, 1.0 - smoothstep(0.92, 1.12, rr), hasCrown);
   let cover = mix(treeFrac, inCrown, resolved);                     // how much of this pixel is foliage
   let canopyMean = mix(leafGreen, leafDry, c.dryMix * 0.55) * 0.80;
@@ -96,7 +124,7 @@ fn landMaterial(pxz : vec2<f32>, n : vec3<f32>, V : vec3<f32>, dist : f32, c : L
   groundCover = mix(groundCover, vec3<f32>(0.19, 0.15, 0.10), smoothstep(0.80, 0.95, g2.r) * 0.35);            // bare soil flecks
   groundCover = mix(groundCover, vec3<f32>(0.052, 0.042, 0.030) * (0.7 + 0.6 * g1.g), c.mangW);                 // mangrove mud
   let meanCol = mix(groundCover, canopyMean, treeFrac);
-  var veg = meanCol; var occ = 1.0; var nAdd = vec3<f32>(0.0);
+  var veg = meanCol; var occ = 1.0; var nAdd = vec3<f32>(0.0); var leafW = 0.0; var hTop = 0.0; var rimW = 0.0;
   if (resolved > 0.0) {
     var detailCol = groundCover;
     if (hasCrown) {
@@ -111,6 +139,11 @@ fn landMaterial(pxz : vec2<f32>, n : vec3<f32>, V : vec3<f32>, dist : f32, c : L
       let ln = fadeN(vnoise4(pxz * 1.9 + vec2<f32>(idv * 17.0, 3.0)), dist, 30.0, 220.0);            // leaf clumps (~0.5 m)
       let ls = fadeN(vnoise4(pxz * 7.3 + vec2<f32>(5.0, idv * 9.0)), dist, 8.0, 70.0);               // leaf speckle (~15 cm)
       leaf *= (0.78 + 0.44 * ln.r) * (0.86 + 0.28 * ls.g);
+      // leaf-cluster structure: every cluster has its own tint (fresh yellow-green flush, blue-green shade leaves) and the pile has creases and relief
+      let fol = foliage(pxz, foot, idv * 41.0);
+      leaf *= 1.0 + 0.50 * fol.tone;
+      leaf = mix(leaf, leaf * vec3<f32>(1.30, 1.22, 0.62), smoothstep(0.10, 0.45, fol.tone) * (1.0 - c.mangW) * 0.5);
+      leaf = mix(leaf, leaf * vec3<f32>(0.72, 0.95, 1.18), smoothstep(-0.12, -0.50, fol.tone) * 0.6);
       // between crowns: shaded foliage inside a dense stand (dark green), bare litter beyond it
       let floorFol = smoothstep(0.55, 0.90, treeFrac) * (1.0 - smoothstep(1.30, 2.10, rr));
       detailCol = mix(mix(under * (0.7 + 0.6 * ln.g), leafDark * 0.75 * (0.8 + 0.4 * ln.g), floorFol), leaf, inCrown);
@@ -118,9 +151,14 @@ fn landMaterial(pxz : vec2<f32>, n : vec3<f32>, V : vec3<f32>, dist : f32, c : L
       // looking down into the canopy; at grazing angles the crowns in front hide them (this removes the dark rim along ridges).
       let gapVis = smoothstep(0.10, 0.55, clamp(dot(n, V), 0.0, 1.0));
       let underForest = 1.0 - c.sandW;                       // open sand beside a crown is not understorey shade
+      let folK = max(inCrown, 0.75 * floorFol) * resolved * underForest;
       occ = mix(1.0, mix(0.28, 1.0, smoothstep(0.52, 0.92, hfrac)), gapVis * resolved * underForest);
+      occ *= mix(1.0, clamp(fol.ao, 0.22, 1.45), folK);
       let g = crownGrad(pxz, cr, treeFrac);
-      nAdd = vec3<f32>(-g.x, 0.0, -g.y) * 0.85 * resolved * underForest;
+      nAdd = vec3<f32>(-(g.x + fol.g.x * folK), 0.0, -(g.y + fol.g.y * folK)) * 0.85 * resolved * underForest;
+      leafW = max(inCrown, 0.5 * floorFol) * resolved;
+      hTop = crownH(pxz, cr, treeFrac);
+      rimW = inCrown * resolved * smoothstep(0.50, 0.85, hfrac);     // only the upper dome frays at the edge; the lower flanks stay solid
     }
     veg = mix(meanCol, detailCol, resolved);
   }
@@ -133,8 +171,27 @@ fn landMaterial(pxz : vec2<f32>, n : vec3<f32>, V : vec3<f32>, dist : f32, c : L
   var m : LandMat;
   m.albedo = alb; m.sandW = sandW; m.rockW = c.rockW;
   m.canopy = clamp(cover, 0.0, 1.0) * (1.0 - c.rockW);
-  m.nAdd = nAdd; m.occ = occ;
+  m.nAdd = nAdd; m.occ = occ; m.leaf = leafW * (1.0 - c.rockW) * (1.0 - c.sandW); m.hTop = hTop; m.rim = rimW * (1.0 - c.rockW) * (1.0 - c.sandW);
   return m;
+}
+
+// Sun shadow cast onto a crown by its neighbours (the global march only sees the smoothed stand): walk toward the sun over the crown height field.
+// hSelf = canopy height of the point above the bare earth; nG = bare-earth normal (a hillside rising toward the sun lifts the occluders).
+fn crownShade(pxz : vec2<f32>, nG : vec3<f32>, L : vec3<f32>, tf : f32, hSelf : f32, jit : f32) -> f32 {
+  let lh = length(L.xz);
+  if (lh < 0.02) { return 1.0; }
+  let dir = L.xz / lh;
+  let tanE = L.y / lh;                                              // rise of the sun ray per metre walked toward the sun
+  let slope = -nG.xz / max(nG.y, 0.2);                              // bare-earth rise per metre (d h / d x, d h / d z)
+  let dmax = clamp(7.0 / max(tanE, 0.05), 4.0, 18.0);
+  var vis = 1.0;
+  for (var k = 0; k < 5; k++) {
+    let d = dmax * ((f32(k) + 0.5 + 0.5 * (jit - 0.5)) / 5.0);
+    let q = pxz + dir * d;
+    let occ = crownH(q, crownAt(q), tf) + clamp(dot(slope, dir) * d, -4.0, 4.0);
+    vis = min(vis, smoothstep(-0.6, 0.7, hSelf + d * tanE - occ));
+  }
+  return vis;
 }
 
 fn seabedAlbedo(q : vec3<f32>, nb : vec3<f32>, depth : f32, dist : f32) -> vec3<f32> {
@@ -255,15 +312,40 @@ fn shadeLand(p : vec3<f32>, V : vec3<f32>, dist : f32, withShadow : bool, jit : 
   let wrack = (1.0 - smoothstep(0.0, 0.10, abs(ground - (sea + 0.46 + 0.10 * (wn.r - 0.5))))) * smoothstep(0.50, 0.78, wn.g) * mat.sandW * (1.0 - smoothstep(60.0, 400.0, dist));
   alb = mix(alb, vec3<f32>(0.075, 0.055, 0.035) * (0.7 + 0.6 * wn.b), wrack * 0.50);
 
+  // leafy edge: where a crown's surface turns away from the viewer the leaf clusters thin out, so the skyline is a fringe, not a smooth arc
+  gHole = 0.0;
+  if (withShadow && mat.rim > 0.05) {
+    let rimK = smoothstep(0.38, 0.03, clamp(dot(n, V), 0.0, 1.0)) * mat.rim;
+    let hn = vnoise4(pxz * 3.1 + vec2<f32>(5.1, 9.7));
+    if (hn.b * 0.7 + hn.a * 0.3 < rimK * 0.80) {
+      // only a real skyline frays: the view ray, continued past this crown, must clear the stand and the hillside beyond it (otherwise something is behind the hole)
+      var open = 1.0;
+      for (var k = 0; k < 5; k++) {
+        let t = 6.0 * pow(3.2, f32(k));                          // 6, 19, 61, 197, 630 m
+        let q = p - V * t;
+        open = min(open, smoothstep(-0.4, 1.2, q.y - surfaceAt(q.xz)));
+      }
+      if (open > 0.5) { gHole = 1.0; }
+    }
+  }
+
   let L = G.sunDir.xyz;
   let wrap = 0.35 * mat.canopy;                              // leaves transmit: wrapped diffuse on foliage
   let ndl = max((dot(n, L) + wrap) / (1.0 + wrap), 0.0);
   var sh = 1.0;
   if (withShadow && ndl > 0.0) { sh = sunShadow(vec3<f32>(pxz.x, max(p.y, ground), pxz.y) + n * 0.4, jit * 1.2) * structShadow(pxz); }
+  if (withShadow && ndl > 0.0 && mat.leaf > 0.02) { sh *= mix(1.0, crownShade(pxz, nG, L, meanCanopy(pxz).y, mat.hTop, jit), mat.leaf); }
   let ao = clamp(1.0 - 0.055 * max(aux.y, 0.0) + 0.02 * min(aux.y, 0.0), 0.35, 1.05) * (0.75 + 0.25 * clamp(n.y, 0.0, 1.0)) * mat.occ;
   let Eamb = G.skyE.rgb * (0.5 + 0.5 * n.y) * ao + G.sunE.rgb * (L.y * 0.06 * (0.5 - 0.5 * n.y));
-  sh *= 0.5 + 0.5 * mat.occ;
+  sh *= pow(clamp(mat.occ, 0.1, 1.5), 0.85);                 // leaf-cluster occlusion also shades the direct light (self-shadowing between clusters)
   var col = alb / PI * (G.sunE.rgb * ndl * sh + Eamb);
+  if (mat.leaf > 0.02) {
+    // leaves transmit (a crown lit from behind glows yellow-green) and carry a waxy cuticle: a soft sheen of sun on the leaf clusters facing the half vector
+    let back = max(dot(-n, L), 0.0);
+    col += alb * vec3<f32>(1.0, 1.2, 0.45) * G.sunE.rgb / PI * (0.45 * back * sh * mat.leaf);
+    let nh = max(dot(n, normalize(L + V)), 0.0);
+    col += G.sunE.rgb * (0.012 * 26.0 / (8.0 * PI) * pow(nh, 18.0) * ndl * sh * mat.leaf);
+  }
   // glossy wet film reflecting the sky
   let R = reflect(-V, n);
   let F = fresnelAir(max(dot(n, V), 0.0));
@@ -284,6 +366,7 @@ fn shadeLand(p : vec3<f32>, V : vec3<f32>, dist : f32, withShadow : bool, jit : 
   let jit = hash21(in.pos.xy);
   var col = shadeLand(p, toCam / dist, dist, true, jit);
   col = applyFog(col, dist);
+  if (gHole > 0.5) { let d = -toCam / dist; col = skyWithClouds(vec3<f32>(d.x, max(d.y, 0.03), d.z)); }
   return vec4<f32>(col, 1.0);
 }
 `;

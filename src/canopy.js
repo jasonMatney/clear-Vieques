@@ -110,7 +110,7 @@ fn bakeMean(@builtin(global_invocation_id) id : vec3<u32>) {
         { binding: 0, resource: { buffer: gBuf } }, { binding: 1, resource: res.samLin }, { binding: 2, resource: res.samRep },
         { binding: 3, resource: t.demNear.createView() }, { binding: 4, resource: t.demFar.createView() }, { binding: 5, resource: t.auxTex.createView() },
         { binding: 6, resource: d.f16 }, { binding: 7, resource: d.f16a }, { binding: 8, resource: d.f16a }, { binding: 9, resource: d.f16 }, { binding: 10, resource: d.f16 },
-        { binding: 11, resource: res.noise.createView() }, { binding: 12, resource: crownView }, { binding: 13, resource: d.u8 }] });
+        { binding: 11, resource: res.noise.createView() }, { binding: 12, resource: crownView }, { binding: 13, resource: d.u8 }, { binding: 14, resource: d.u8 }] });
       const ub = (a, b) => { const buf = CV.buffer(gpu, 32, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, 'bakeU'); gpu.queue.writeBuffer(buf, 0, new Float32Array([...a, ...b])); return buf; };
       const lattice = (t.site && t.site.matSet === 1) ? 7.0 : this.lattice;   // closed mangrove canopy needs a denser crown lattice
       const u1 = ub([cr.x0, cr.z0, cr.texel, cr.nx], [cr.nz, lattice, cr.maxH, 0]);

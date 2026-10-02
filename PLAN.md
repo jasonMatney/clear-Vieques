@@ -37,7 +37,7 @@ Local azimuthal-equidistant projection centred on each site's origin (`+proj=aeq
 * **Refraction & absorption:** the refracted view ray is ray-marched to the **actual seabed height field**; Beer–Lambert per RGB channel with Jerlov-type coefficients (slider walks I → 9C); water-leaving radiance `(1−F)/n²`; column in-scatter saturates to deep-water colour. Validated: rendered colour vs depth follows the analytic prediction (within ~15 % in the shallows, 2–5 % below 6 m): pale sand → jade → turquoise → deep blue, red gone by ~3 m.
 * **Caustics:** photons from a wavy surface are refracted toward the sun and marched to the seabed; per-triangle flux (source area ÷ footprint area) is splatted into a 2048² map (mip 1 is the sampled base) and looked up at the real seafloor position with sun-penumbra blur growing with depth.
 * **Sky:** CPU single-scattering atmosphere (Rayleigh + Mie + ozone) → LUT; calibrated to diffuse ≈ 17 % of global irradiance; procedural cumulus feed the reflections. Khronos PBR-Neutral tone mapping.
-* **Land:** procedural dry-forest crowns, sea-grape scrub, wind-rippled sand, wet swash band, sun shadows marched on the DEM. CUDEM is bare-earth, so canopy is procedural.
+* **Land:** procedural dry-forest crowns (elliptical domes carrying baked leaf-cluster structure, neighbour-crown sun shadows, leaf translucency, a frayed skyline), sea-grape scrub, wind-rippled sand, wet swash band, sun shadows marched on the DEM. CUDEM is bare-earth, so canopy is procedural.
 
 **Night (Mosquito Bay, implemented).** The moon is the "sun" of the night scene: the same shader paths (direct light, sky LUT, glitter, shadows, clouds) run with a light whose strength follows the lunar phase law.
 

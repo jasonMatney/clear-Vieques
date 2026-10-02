@@ -50,7 +50,7 @@ Panel: location tabs (**Playa Caracas · Mosquito Bay**), **Sun / Moon elevation
 ## What is real, what is procedural
 
 * **Real (NOAA NCEI CUDEM 1/9″, 4 m near grid + 20 m far grid):** all seabed and land elevation. Waterlines, depths, crescents, headlands, the islet, the lagoon and its inlet come from the data. The lagoon's mangrove zone is a distance field from a flood-fill of the DEM's enclosed water (cut at the inlet neck). Shelters and dirt tracks come from OpenStreetMap.
-* **Procedural (on top of the real heightfield):** the forest (CUDEM is bare-earth) — a compute pass classifies the terrain and bakes crown centres, heights and ids; the near mesh (2 m cells) is lifted by them and every crown is shaded as a lit dome. Also: sand and seagrass classes, clouds, stars, the moon's maria, the wave spectrum's fine scales.
+* **Procedural (on top of the real heightfield):** the forest (CUDEM is bare-earth) — a compute pass classifies the terrain and bakes crown centres, heights and ids; the near mesh (2 m cells) is lifted by them, every crown is an elliptical dome, and each crown pixel gets leaf-cluster structure (slope, occlusion, tint) from a CPU-baked, mip-mapped foliage texture, sun shadows from neighbouring crowns, leaf translucency and sheen, and a frayed skyline. Also: sand and seagrass classes, clouds, stars, the moon's maria, the wave spectrum's fine scales.
 * **Sites:** Playa Caracas 18.1120° N, 65.3841° W (the crescent's waterline midpoint; the brief's 18.108 N, 65.386 W falls ~490 m offshore). Mosquito Bay 18.1020° N, 65.4451° W (lagoon centroid).
 
 ## Performance
@@ -69,6 +69,7 @@ Each round: render, find what is visibly wrong, fix the optics or terrain from t
 | 4 | Forest = smeared camouflage, dark rim along ridges, flat beach edge | Baked crowns on a 2 m mesh, dome shading with gaps hidden at grazing angles, per-pixel LOD, trees end at the sand line, crown floor limited to dense stands | [`13`](docs/critique/13-terrain-before-after.png) |
 | 5 | One flat-caustic frame at page load | Root cause: the caustic window origin was uploaded before it was computed, so the shader always used the previous frame's. Fixed; frame 0 is now pixel-identical to later frames | — |
 | 6 | Night sky read as dusk at full moon; moon disc saturated; vertical seam in the Milky Way | Sky dimmed relative to direct moonlight, earthshine on the dark limb, seam-free star-lane noise | [`16`](docs/critique/16-caracas-night.png) |
+| 7 | Crowns still read as smooth rubbery domes: one flat colour each with hard patch edges, no leaf structure, a smooth stair-stepped skyline; from the water roughly half the forest fell back to the flat stand colour (the pixel footprint was stretched by the ground's grazing angle) | A baked leaf-cluster texture (3 octaves, one fetch each, mip level follows the pixel footprint) gives every crown pixel a slope, occlusion and tint; crowns are elliptical and rotated; neighbouring crowns shade each other along the sun ray; leaves transmit backlight and carry a faint sheen; the upper dome edge frays into open sky where the view ray really escapes (painted as sky, not `discard`, which on a tile-based GPU defeats hidden-surface removal: it cost +6–15 ms); foliage footprint no longer stretches at grazing angles | [`17`](docs/critique/17-forest-before-after.jpg) |
 
 More: [OSM shelter](docs/critique/14-osm-shelter.png) · [mangroves by day and night](docs/critique/15-mangrove-day-night.png) · earlier stills `docs/caustics.jpg`, `docs/low-sun.jpg`, `docs/sun-glitter.jpg`, `docs/horizon.jpg`.
 
@@ -83,7 +84,7 @@ More: [OSM shelter](docs/critique/14-osm-shelter.png) · [mangroves by day and n
 
 ```
 index.html            page + CSS (dark glass panel)
-src/                  util · gpu · sky (CPU atmosphere) · night (moon model) · terrain · waves · ripples · caustics · canopy (forest bake)
+src/                  util · gpu · sky (CPU atmosphere) · night (moon model) · terrain · waves · ripples · caustics · canopy (forest bake) · foliage (leaf-cluster texture)
                       structures (OSM shelters) · render · camera · sites · ui · main
 src/shaders/          common (shared WGSL: DEM, canopy, sky, stars/moon, waves, ray marchers) · waves (spectrum/FFT) · scene (sky/terrain/water/post)
 data/terrain.js       packed DEM grids + OSM for both sites (generated)

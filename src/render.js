@@ -30,7 +30,7 @@
       { binding: 0, visibility: all, buffer: { type: 'uniform' } },
       { binding: 1, visibility: all, sampler: { type: 'filtering' } },
       { binding: 2, visibility: all, sampler: { type: 'filtering' } },
-      tex(3), tex(4), tex(5), tex(6), tex(7, '2d-array'), tex(8, '2d-array'), tex(9), tex(10), tex(11), tex(12), tex(13),
+      tex(3), tex(4), tex(5), tex(6), tex(7, '2d-array'), tex(8, '2d-array'), tex(9), tex(10), tex(11), tex(12), tex(13), tex(14),
     ] });
   };
 
@@ -58,6 +58,8 @@
       for (let i = 0; i < nb.length; i++) nb[i] = Math.floor(rnd() * 256);
       this.noise = dev.createTexture({ label: 'noise', size: [256, 256], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.COPY_DST });
       gpu.queue.writeTexture({ texture: this.noise }, nb, { bytesPerRow: 1024 }, [256, 256]);
+
+      this.foliage = CV.makeFoliageTexture(gpu);        // tileable leaf-cluster structure for tree crowns (CPU-baked, mip-mapped)
 
       this.buildTerrainBindings();
 
@@ -98,7 +100,8 @@
         { binding: 7, resource: this.waves.dispView }, { binding: 8, resource: this.waves.slopeView[i] },
         { binding: 9, resource: this.ripples.out.createView() }, { binding: 10, resource: this.caustics.sceneView },
         { binding: 11, resource: this.noise.createView() },
-        { binding: 12, resource: this.terrain.crownTex.createView() }, { binding: 13, resource: this.terrain.meanTex.createView() }] });
+        { binding: 12, resource: this.terrain.crownTex.createView() }, { binding: 13, resource: this.terrain.meanTex.createView() },
+        { binding: 14, resource: this.foliage.createView() }] });
       this.sceneBG = [make(0), make(1)];
       // terrain mesh uniforms
       const mu = (g, isFar) => { const b = CV.buffer(gpu, 32, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, 'meshU');

@@ -60,6 +60,7 @@ ${CV.globals.wgsl('Globals')}
 @group(0) @binding(11) var noiseTex : texture_2d<f32>;
 @group(0) @binding(12) var crownTex : texture_2d<f32>;   // tree crowns, 2 m texels (rgba8): centre offset x, z, crown height, id
 @group(0) @binding(13) var meanTex : texture_2d<f32>;    // stand mean, 4 m texels on the near-DEM grid (rgba8): mean canopy height, tree fraction, -, -
+@group(0) @binding(14) var foliageTex : texture_2d<f32>; // leaf-cluster structure, tileable + mip-mapped (rgba8): slope x, slope z, occlusion, tint
 
 const PI : f32 = 3.14159265359;
 const TAU : f32 = 6.28318530718;
@@ -107,9 +108,11 @@ fn auxAt(p : vec2<f32>) -> vec4<f32> {
 // A crown is an analytic dome: radius from the id, h(r) = H * (0.5 * floor(r) + 0.5 * (1 - r^2)^0.75); the floor (foliage between crowns) fades out
 // beyond ~1.9 R so open ground next to a crown stays at ground level.
 const CROWN_OFF : f32 = 16.0;
-struct Crown { c : vec2<f32>, H : f32, R : f32, id : f32 };
+// Crowns are slightly elliptical and each has its own orientation (rot = cos, sin; iR = 1 / radius along the crown's two axes), so the canopy is
+// not a lattice of identical round bumps.
+struct Crown { c : vec2<f32>, H : f32, R : f32, id : f32, rot : vec2<f32>, iR : vec2<f32> };
 fn crownAt(p : vec2<f32>) -> Crown {
-  var cr : Crown; cr.H = 0.0; cr.R = 3.0; cr.id = 0.0; cr.c = p;
+  var cr : Crown; cr.H = 0.0; cr.R = 3.0; cr.id = 0.0; cr.c = p; cr.rot = vec2<f32>(1.0, 0.0); cr.iR = vec2<f32>(0.333);
   let t = (p - G.crownA.xy) / G.crownA.z;
   if (t.x < 0.0 || t.y < 0.0 || t.x >= G.crownA.w || t.y >= G.crownB.x) { return cr; }
   let ti = vec2<i32>(floor(t));
@@ -118,7 +121,15 @@ fn crownAt(p : vec2<f32>) -> Crown {
   cr.H = d.z * G.crownB.z;
   cr.id = d.w;
   cr.R = 3.0 + 2.4 * fract(d.w * 7.31 + 0.17);
+  let sq = 0.80 + 0.20 * fract(d.w * 23.7 + 0.41);                              // squash: 0.8 .. 1.0 along the minor axis
+  cr.rot = normalize(vec2<f32>(fract(d.w * 37.13 + 0.21), fract(d.w * 61.71 + 0.57)) * 2.0 - 1.0 + vec2<f32>(0.001, 0.0));   // orientation without trig
+  cr.iR = vec2<f32>(1.0 / (cr.R * (1.08 + 0.10 * fract(d.w * 5.3))), 1.0 / (cr.R * sq * 0.92));
   return cr;
+}
+// distance from the crown centre in crown radii (elliptical metric)
+fn crownRad(p : vec2<f32>, cr : Crown) -> f32 {
+  let d = p - cr.c;
+  return length(vec2<f32>(d.x * cr.rot.x + d.y * cr.rot.y, -d.x * cr.rot.y + d.y * cr.rot.x) * cr.iR);
 }
 // tf = local tree fraction (foliage between crowns exists only inside a dense stand, never beside open sand)
 fn crownProfile(r : f32, tf : f32) -> f32 {
@@ -127,7 +138,7 @@ fn crownProfile(r : f32, tf : f32) -> f32 {
 }
 fn crownH(p : vec2<f32>, cr : Crown, tf : f32) -> f32 {
   if (cr.H <= 0.0) { return 0.0; }
-  return cr.H * crownProfile(length(p - cr.c) / cr.R, tf);
+  return cr.H * crownProfile(crownRad(p, cr), tf);
 }
 // surface slope (dh/dx, dh/dz) of the crown dome at p (finite difference of the analytic profile; capped near the rim)
 fn crownGrad(p : vec2<f32>, cr : Crown, tf : f32) -> vec2<f32> {
