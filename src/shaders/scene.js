@@ -62,6 +62,60 @@ fn sandAlbedo(p : vec2<f32>, dist : f32) -> vec3<f32> {
   return c;
 }
 
+// ---- rocky shores. Rockiness is the coast's steepness over ~10 m (baked into shoreInfo().y; the canopy bake computes it directly): a sand beach
+// is gentle, headland tips and islet flanks are steep. Rock covers a band from ~12 m below the waterline (inner edge) to ~10 m above it, with
+// sand pockets where the coast is only moderately steep.
+fn coastSteep(p : vec2<f32>) -> f32 {
+  var tn = 0.0;
+  for (var k = 0; k < 5; k++) {
+    let o = select(vec2<f32>(0.0), vec2<f32>(cos(f32(k) * 1.571), sin(f32(k) * 1.571)) * 7.0, k > 0);
+    let n = terrainNormal(p + o, 5.0);
+    tn += length(n.xz) / max(n.y, 0.05);
+  }
+  return smoothstep(0.16, 0.40, tn / 5.0);
+}
+fn shoreRockFrom(p : vec2<f32>, sd : f32, rocky : f32) -> f32 {
+  if (rocky < 0.02 || G.misc.w > 0.5) { return 0.0; }
+  let band = smoothstep(-18.0, -8.0, sd) * (1.0 - smoothstep(6.0, 13.0, sd + 4.0 * (vnoise4(p * 0.07).g - 0.5)));
+  let pocket = smoothstep(0.30, 0.55, vnoise4(p * 0.09 + vec2<f32>(6.1, 2.4)).r + 0.40 * rocky);
+  return band * smoothstep(0.05, 0.32, rocky) * pocket;
+}
+fn shoreRock(p : vec2<f32>, sd : f32) -> f32 { return shoreRockFrom(p, sd, shoreInfo(p).y); }
+// Boulders and ledges on the rocky shore: height (m) above the bare DEM. Rounded boulders 1.5-2.4 m in radius and 0.5-1.4 m tall on a ~4.2 m
+// cell pattern (large enough for the 1-2 m terrain mesh to carry their shape), on gently undulating ledge rock. Smaller stones are surface
+// detail only (rockDetail), never geometry: below the mesh spacing they would turn into spikes.
+fn boulders(p : vec2<f32>, rk : f32) -> f32 {
+  if (rk < 0.03) { return 0.0; }
+  let cf = crownField(p + vec2<f32>(17.3, 8.1), 4.2);
+  let rad = 0.36 + 0.20 * fract(cf.y * 7.7);
+  let r = cf.x / rad;
+  var h = 0.0;
+  if (r < 1.0 && cf.y < rk * 1.05) {
+    let ht = (0.55 + 0.85 * fract(cf.y * 3.1)) * smoothstep(0.0, 0.25, rk);
+    let u = 1.0 - r * r;
+    h = ht * u * (1.4 - 0.4 * u);                                   // rounded top, flared foot
+  }
+  return h + rk * 0.25 * vnoise4(p * 0.35 + vec2<f32>(3.3, 7.7)).r;
+}
+// boulder height box-filtered over +-r (m): the mesh carries a smooth shape instead of point samples
+fn bouldersFiltered(p : vec2<f32>, rk : f32, r : f32) -> f32 {
+  if (rk < 0.03) { return 0.0; }
+  return 0.25 * (boulders(p + vec2<f32>(-r, -r), rk) + boulders(p + vec2<f32>(r, -r), rk) + boulders(p + vec2<f32>(-r, r), rk) + boulders(p + vec2<f32>(r, r), rk));
+}
+// rock surface detail: (relief for the normal, darkening in cracks and pits)
+fn rockDetail(p : vec2<f32>, dist : f32) -> vec2<f32> {
+  let k = 1.0 - smoothstep(30.0, 140.0, dist);
+  if (k <= 0.0) { return vec2<f32>(0.0, 1.0); }
+  let r1 = vnoise4(p * 2.2 + vec2<f32>(1.7, 4.2)); let r2 = vnoise4(p * 6.3 + vec2<f32>(8.8, 0.3));
+  let crack = smoothstep(0.07, 0.0, abs(vnoise4(p * 1.1 + vec2<f32>(5.0, 2.0)).r - 0.5));
+  return vec2<f32>((0.6 * r1.r + 0.4 * r2.g) * 0.10 * k, 1.0 - k * (0.40 * crack + 0.18 * (1.0 - r2.b)));
+}
+// per-boulder tone: weathered boulders differ (some darker, some warmer, some paler)
+fn boulderTone(p : vec2<f32>) -> vec3<f32> {
+  let id = crownField(p + vec2<f32>(17.3, 8.1), 4.2).y;
+  return vec3<f32>(0.80 + 0.40 * fract(id * 11.3)) * mix(vec3<f32>(1.0), vec3<f32>(1.08, 1.0, 0.88), step(0.6, fract(id * 5.9)));
+}
+
 // ---- tree line: 1 where crowns stand at full height, falling to 0 over ~6 m toward the open beach, so the canopy slopes down to the sand like
 // wind-pruned sea grape instead of ending in a wall. The vertex shader (canopy lift), the fragment shader (crown shading) and the canopy-mean bake
 // all apply the same factor, continuously in position (the crown map itself is 2 m texels).
@@ -80,7 +134,7 @@ fn treeLine(p : vec2<f32>, n : vec3<f32>, aux : vec4<f32>, dist : f32) -> f32 {
 
 // ---- land classification: shared by the canopy bake (compute, dist = 0) and the terrain shading (fragment)
 struct LandCls {
-  sandW : f32, rockW : f32, plain : f32, scrub : f32, trackW : f32, vegW : f32, dryMix : f32, sandEdge : f32, elev : f32, mangW : f32, sd : f32, treeLine : f32,
+  sandW : f32, rockW : f32, plain : f32, scrub : f32, trackW : f32, vegW : f32, dryMix : f32, sandEdge : f32, elev : f32, mangW : f32, sd : f32, treeLine : f32, shoreRk : f32,
   n1 : vec4<f32>, n2 : vec4<f32>, n3 : vec4<f32>, n4 : vec4<f32>,
 };
 fn landClass(pxz : vec2<f32>, n : vec3<f32>, aux : vec4<f32>, dist : f32) -> LandCls {
@@ -110,6 +164,9 @@ fn landClass(pxz : vec2<f32>, n : vec3<f32>, aux : vec4<f32>, dist : f32) -> Lan
   c.sd = sd;
   c.treeLine = treeLineK(c.sandEdge, sd, slope, c.elev, c.mangW);
   c.sandW *= 1.0 - c.mangW; c.plain *= 1.0 - c.mangW; c.scrub *= 1.0 - c.mangW;
+  c.shoreRk = shoreRock(pxz, sd);                                   // 0 inside the canopy bake (shoreInfo is not baked yet): it uses coastSteep
+  c.rockW = max(c.rockW, c.shoreRk);
+  c.sandW *= 1.0 - c.shoreRk; c.scrub *= 1.0 - c.shoreRk; c.plain *= 1.0 - c.shoreRk;
   c.vegW = (1.0 - c.sandW) * (1.0 - c.rockW) * (1.0 - c.trackW);
   return c;
 }
@@ -193,7 +250,15 @@ fn landMaterial(pxz : vec2<f32>, n : vec3<f32>, V : vec3<f32>, dist : f32, c : L
     }
     veg = mix(meanCol, detailCol, resolved);
   }
-  let rock = mix(vec3<f32>(0.31, 0.28, 0.23), vec3<f32>(0.19, 0.17, 0.14), c.n3.g) * (0.70 + 0.50 * c.n4.r);
+  var rock = mix(vec3<f32>(0.31, 0.28, 0.23), vec3<f32>(0.19, 0.17, 0.14), c.n3.g) * (0.70 + 0.50 * c.n4.r);
+  if (c.shoreRk > 0.0) {
+    // shore boulders: weathered grey-brown, mottled, with orange-yellow lichen crusts on the drier tops
+    let rm = fadeN(vnoise4(pxz * 2.3 + vec2<f32>(4.4, 1.1)), dist, 15.0, 120.0);
+    let rf = fadeN(vnoise4(pxz * 9.0), dist, 6.0, 40.0);
+    var sr = mix(vec3<f32>(0.23, 0.205, 0.17), vec3<f32>(0.13, 0.115, 0.095), rm.r) * (0.75 + 0.5 * rf.g) * rockDetail(pxz, dist).y * boulderTone(pxz);
+    sr = mix(sr, vec3<f32>(0.34, 0.24, 0.10), smoothstep(0.80, 0.93, rm.b) * 0.6);
+    rock = mix(rock, sr, c.shoreRk);
+  }
   let soil = vec3<f32>(0.30, 0.22, 0.14) * (0.85 + 0.3 * c.n4.b);
   // beach morning-glory and grass runners creep a few metres onto the sand from the vegetation line, in patches
   let creepBand = smoothstep(c.sandEdge - 7.0, c.sandEdge - 0.5, c.sd) * c.sandW * (1.0 - c.mangW);
@@ -309,6 +374,14 @@ fn seabedAlbedo(q : vec3<f32>, nb : vec3<f32>, depth : f32, dist : f32) -> vec3<
   let rock = vec3<f32>(0.13, 0.115, 0.09) * (0.6 + 0.8 * n3.g);
   var a = mix(sand, grass, cv.x);
   a = mix(a, rock, rockW);
+  // rocky shore continues under water: boulders furred with brown and green algae, sand in the gaps
+  let srk = shoreRock(p, auxAt(p).x);
+  if (srk > 0.0) {
+    let bh = boulders(p, srk);
+    let am = vnoise4(p * 1.7 + vec2<f32>(8.2, 3.1));
+    let rs = mix(vec3<f32>(0.10, 0.095, 0.065), vec3<f32>(0.07, 0.10, 0.05), am.r) * (0.7 + 0.6 * am.g) * (0.55 + 0.65 * smoothstep(0.0, 0.9, bh));
+    a = mix(a, rs, srk * smoothstep(0.02, 0.25, bh + 0.15 * srk));
+  }
   return a;
 }
 `;
@@ -350,6 +423,7 @@ struct TVOut { @builtin(position) pos : vec4<f32>, @location(0) wpos : vec3<f32>
 // cannot represent a 5 m dome at a point: the analytic crown height is box-filtered over a footprint of +-r (half the vertex spacing, roughly).
 fn nearHeight(xz : vec2<f32>, r : f32, lumps : bool) -> f32 {
   var h = heightAt(xz);
+  h += bouldersFiltered(xz, shoreRock(xz, auxAt(xz).x), r);       // rocky shores: boulders and ledges
   if (G.tint.w < 0.5) {
     let tf = meanCanopy(xz).y; var ch = 0.0;
     for (var k = 0; k < 4; k++) {
@@ -452,6 +526,14 @@ fn shadeLand(p : vec3<f32>, V : vec3<f32>, dist : f32, withShadow : bool, jit : 
   let cls = landClass(pxz, nG, aux, dist);
   let mat = landMaterial(pxz, nG, V, dist, cls);
   var n = nG;
+  if (cls.shoreRk > 0.03 && dist < 400.0) {                       // boulder shapes tilt the normal
+    let e = 0.3;
+    let b0 = boulders(pxz, cls.shoreRk);
+    let gb = vec2<f32>(boulders(pxz + vec2<f32>(e, 0.0), cls.shoreRk) - b0, boulders(pxz + vec2<f32>(0.0, e), cls.shoreRk) - b0) / e;
+    let rd = rockDetail(pxz, dist);
+    let gd = vec2<f32>(rockDetail(pxz + vec2<f32>(0.08, 0.0), dist).x - rd.x, rockDetail(pxz + vec2<f32>(0.0, 0.08), dist).x - rd.x) / 0.08;
+    n = normalize(n + vec3<f32>(-(gb.x + gd.x), 0.0, -(gb.y + gd.y)) * (1.0 - smoothstep(200.0, 400.0, dist)) * cls.shoreRk);
+  }
   // micro relief: leaf-clump bumps on vegetation, faint ripples on sand; crown domes tilt the normal (mat.nAdd)
   let nb = fadeN(vnoise4(pxz * 1.7), dist, 40.0, 250.0);
   let bump = mix(0.12, 0.03, mat.sandW);
@@ -472,6 +554,17 @@ fn shadeLand(p : vec3<f32>, V : vec3<f32>, dist : f32, withShadow : bool, jit : 
   let wetTop = sea + 0.26 + 0.9 * max(hw, 0.0) + 0.5 * abs(hw) + surfRun;
   let wet = (1.0 - smoothstep(wetTop - 0.42, wetTop + 0.08, ground)) * mat.sandW;
   var alb = mat.albedo * mix(vec3<f32>(1.0), vec3<f32>(0.58, 0.54, 0.53), wet);
+  // intertidal and splash zone on the rocks: a dark band (wet rock, black cyanobacteria) from the waterline up, higher where waves hit harder,
+  // with a thin green algal fringe right at the water
+  var rockWet = 0.0;
+  if (cls.shoreRk > 0.0) {
+    let above = p.y - sea;
+    let splash = 0.45 + 1.1 * shoreInfo(pxz).x * (0.4 + G.waveA.w);
+    let zn = vnoise4(pxz * 0.6 + vec2<f32>(2.0, 9.0)).r;
+    rockWet = (1.0 - smoothstep(splash * (0.6 + 0.5 * zn), splash * (0.9 + 0.5 * zn), above)) * cls.shoreRk;
+    alb = mix(alb, vec3<f32>(0.045, 0.045, 0.040), rockWet * 0.85);
+    alb = mix(alb, vec3<f32>(0.05, 0.09, 0.035), (1.0 - smoothstep(0.0, 0.18, above)) * cls.shoreRk * 0.7);
+  }
   // wrack line: seaweed, twigs and shell hash left at the highest recent swash
   let wn = vnoise4(pxz * vec2<f32>(0.55, 0.9));
   let wrack = (1.0 - smoothstep(0.0, 0.10, abs(ground - (sea + 0.46 + 0.10 * (wn.r - 0.5))))) * smoothstep(0.50, 0.78, wn.g) * mat.sandW * (1.0 - smoothstep(60.0, 400.0, dist));
@@ -526,7 +619,7 @@ fn shadeLand(p : vec3<f32>, V : vec3<f32>, dist : f32, withShadow : bool, jit : 
   // glossy wet film reflecting the sky
   let R = reflect(-V, n);
   let F = fresnelAir(max(dot(n, V), 0.0));
-  col += skyWithClouds(vec3<f32>(R.x, abs(R.y), R.z)) * F * wet * 0.85;
+  col += skyWithClouds(vec3<f32>(R.x, abs(R.y), R.z)) * F * (wet * 0.85 + rockWet * 0.5);
   return col;
 }
 
@@ -754,7 +847,15 @@ fn reflectedLand(q : vec3<f32>, R : vec3<f32>, distTotal : f32) -> vec3<f32> {
   // white water behind each bore, torn into metre-scale patches and streaks that drift with the flow
   let nfs = vnoise4(in.rest * vec2<f32>(0.55, 0.35) + vec2<f32>(t * 0.06, -t * 0.04)).r * 0.6 + nf * 0.4;
   let surfFoam = sf.foam * smoothstep(0.10, 0.45, nfs + 0.35 * sf.foam) * (0.80 + 0.35 * nf2);   // bubbles: a little uneven in brightness
-  var foam = clamp(wcap + lace * 0.9 + edgeLine * 0.5 + brk * (0.35 + 0.65 * nf) + rp.w * 0.55 + surfFoam, 0.0, 1.0);
+  // water washing over and around rocks breaks into foam, more on exposed shores and as each bore arrives
+  var rockFoam = 0.0;
+  let rkW = shoreRock(in.rest, auxAt(in.rest).x);
+  if (rkW > 0.02) {
+    let clear = P.y - (bedH + boulders(in.rest, rkW));
+    let ex = shoreInfo(in.rest).x;
+    rockFoam = rkW * (1.0 - smoothstep(0.0, 0.25 + 0.6 * ex * (0.3 + G.waveA.w) + 0.5 * sf.h, clear)) * smoothstep(0.15, 0.55, nfs + 0.3 * nf2) * (0.5 + 0.7 * ex);
+  }
+  var foam = clamp(wcap + lace * 0.9 + edgeLine * 0.5 + brk * (0.35 + 0.65 * nf) + rp.w * 0.55 + surfFoam + rockFoam, 0.0, 1.0);
   foam = foam * foam * (3.0 - 2.0 * foam);
   let Lfoam = vec3<f32>(0.90, 0.92, 0.90) / PI * (G.sunE.rgb * max(dot(N, Ls), 0.0) * 0.9 * cs + G.skyE.rgb * (0.5 + 0.5 * N.y));
 

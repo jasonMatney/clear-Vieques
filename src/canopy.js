@@ -13,7 +13,8 @@
   const CV = window.CV;
 
   const bakeCode = () => CV.wgsl.prelude() + CV.wgsl.materials + /* wgsl */`
-struct BU { a : vec4<f32>, b : vec4<f32>, c : vec4<f32> };   // a: grid x0, z0, cell (m), nx ; b: nz, crown lattice (m), max canopy height (m), - ; c: first lattice cell i, j, cell count i, j
+struct BU { a : vec4<f32>, b : vec4<f32>, c : vec4<f32> };   // a: grid x0, z0, cell (m), nx ; b: nz, crown lattice (m), max canopy height (m), - ;
+                                                             // c: first lattice cell i, j, cell count i, j (crowns) | swell, wind-sea travel angle (rad), -, - (mean)
 @group(1) @binding(0) var<uniform> B : BU;
 @group(1) @binding(1) var outTex : texture_storage_2d<rgba8unorm, write>;
 @group(1) @binding(2) var cellTex : texture_2d<f32>;
@@ -35,6 +36,7 @@ fn standAt(p : vec2<f32>) -> vec2<f32> {
   h = mix(h, 2.8, c.scrub * 0.8);                          // sea-grape band behind the sand
   h = mix(h, (3.6 + 2.6 * c.n2.g) * (1.0 + 0.15 * c.n3.r), c.mangW);   // mangrove: a lower, closed canopy
   tree = max(tree, c.mangW * 1.05);
+  tree *= 1.0 - shoreRockFrom(p, aux.x, coastSteep(p));            // no trees on the rocky shore band of headlands and islets
   return vec2<f32>(h, tree);
 }
 
@@ -76,6 +78,28 @@ fn bakeCrowns(@builtin(global_invocation_id) id : vec3<u32>) {
   textureStore(outTex, vec2<i32>(id.xy), vec4<f32>(clamp(off, vec2<f32>(0.0), vec2<f32>(1.0)), clamp(bH / B.b.z, 0.0, 1.0), bid));
 }
 
+// Open water from p toward where the waves come from (m): march outward, ignore land until the ray has reached water (p itself may be on the
+// beach), then stop at the first land. Islets, headlands and the far shore of the bay cast a "wave shadow".
+fn openFetch(p : vec2<f32>, src : vec2<f32>) -> f32 {
+  let sea = seaLevel();
+  var t = 10.0; var wet = false;
+  for (var k = 0; k < 24; k++) {
+    let land = heightAt(p + src * t) > sea + 0.2;
+    if (!land) { wet = true; } else if (wet || t > 80.0) { return t; }
+    t *= 1.28;
+  }
+  return 6000.0;
+}
+// 0 (sheltered) .. 1 (open to the waves), over a ~70 degree fan around the direction the waves come from (waves spread into a shadow zone)
+fn exposureFrom(p : vec2<f32>, travel : f32) -> f32 {
+  var e = 0.0;
+  for (var k = -4; k <= 4; k++) {
+    let a = travel + PI + f32(k) * 0.15;
+    e += (1.0 - 0.12 * abs(f32(k))) * smoothstep(150.0, 2200.0, openFetch(p, vec2<f32>(cos(a), sin(a))));
+  }
+  return e / 6.6;
+}
+
 @compute @workgroup_size(8, 8, 1)
 fn bakeMean(@builtin(global_invocation_id) id : vec3<u32>) {
   if (id.x >= u32(B.a.w) || id.y >= u32(B.b.x)) { return; }
@@ -91,7 +115,15 @@ fn bakeMean(@builtin(global_invocation_id) id : vec3<u32>) {
       cnt += select(0.0, 1.0, cr.H * tl > 0.5);
     }
   }
-  textureStore(outTex, vec2<i32>(id.xy), vec4<f32>(sh / 16.0 / B.b.z, cnt / 16.0, 0.0, 0.0));
+  // shore character near the waterline (land and water within ~150 m of it): exposure to the swell (or, less, the wind sea) and rockiness, the
+  // coast's steepness over ~10 m (a sand beach is gentle; headland tips and islet flanks are steep rock)
+  let pc = org + 0.5 * cell;
+  var expo = 1.0; var rocky = 0.0;
+  if (abs(auxAt(pc).x) < 150.0) {
+    expo = max(exposureFrom(pc, B.c.x), 0.7 * exposureFrom(pc, B.c.y));
+    rocky = coastSteep(pc);
+  }
+  textureStore(outTex, vec2<i32>(id.xy), vec4<f32>(sh / 16.0 / B.b.z, cnt / 16.0, expo, rocky));
 }
 `;
 
@@ -143,7 +175,9 @@ fn bakeMean(@builtin(global_invocation_id) id : vec3<u32>) {
       const cellTex = dev.createTexture({ label: 'crownCells', size: [cnx, cnz], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING });
       const cells = [ci, cj, cnx, cnz];
       const u0 = ub([cr.x0, cr.z0, cr.texel, cr.nx], [cr.nz, lattice, cr.maxH, 0], cells);
-      const u2 = ub([n.x0, n.z0, n.dx, n.nx], [n.nz, lattice, cr.maxH, 0], cells);
+      const site = t.site || {};
+      const u2 = ub([n.x0, n.z0, n.dx, n.nx], [n.nz, lattice, cr.maxH, 0],
+        [CV.Waves.travelAngle(site.swellFrom || 165), CV.Waves.travelAngle(site.windFrom || 70), 0, 0]);
       const g1 = (u, tex, readView) => dev.createBindGroup({ layout: this.l1, entries: [{ binding: 0, resource: { buffer: u } }, { binding: 1, resource: tex.createView() }, { binding: 2, resource: readView }] });
       const enc = dev.createCommandEncoder({ label: 'canopyBake' });
       let p = enc.beginComputePass({ label: 'bakeCells' });

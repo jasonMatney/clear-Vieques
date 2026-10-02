@@ -158,6 +158,12 @@ fn meanCanopy(p : vec2<f32>) -> vec2<f32> {
   let m = textureSampleLevel(meanTex, samLin, uv, 0.0);
   return vec2<f32>(m.x * G.crownB.z, m.y);
 }
+// Shore character (baked with the canopy mean, 4 m): exposure to the waves 0..1, rockiness 0..1. Away from the near window: open, not rocky.
+fn shoreInfo(p : vec2<f32>) -> vec2<f32> {
+  let uv = (p - G.demNear.xy) / G.demNear.zw;
+  if (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) { return vec2<f32>(1.0, 0.0); }
+  return textureSampleLevel(meanTex, samLin, uv, 0.0).ba;
+}
 // Bare-earth DEM plus the smoothed canopy: what the sun and reflected rays actually meet.
 fn surfaceAt(p : vec2<f32>) -> f32 { return heightAt(p) + meanCanopy(p).x; }
 
@@ -446,7 +452,8 @@ fn surfAt(p : vec2<f32>, t : f32, soft : f32) -> Surf {
   let sd = auxAt(p).x;
   if (sd < -60.0 || sd > 14.0) { return o; }
   let n = vnoise4(p * 0.012 + vec2<f32>(4.1, 7.3)); let n2 = vnoise4(p * 0.05 + vec2<f32>(1.7, 2.9));
-  let A = surfSets(p, t) * smoothstep(-55.0, -18.0, sd) * (1.0 - smoothstep(-3.0, 8.0, sd));
+  let si = shoreInfo(p);                                             // exposure: big surf on open shores, little in the lee of islets and headlands
+  let A = surfSets(p, t) * smoothstep(-55.0, -18.0, sd) * (1.0 - smoothstep(-3.0, 8.0, sd)) * mix(0.10, 1.15, si.x);
   let x = sd + 9.0 * (n.r - 0.5) + 2.0 * (n2.b - 0.5);                // wavy fronts
   let u = (t * SURF_L / SURF_T - x) / SURF_L;                          // the crest is where u is a whole number; it moves inland
   let w = clamp(soft / SURF_L, 0.04, 0.5);
@@ -469,7 +476,7 @@ fn surfAt(p : vec2<f32>, t : f32, soft : f32) -> Surf {
     lace *= 0.75 + 0.35 * smoothstep(0.0, 0.25, cellEdge(dq * 3.5)) * (1.0 - smoothstep(0.2, 0.5, soft));
   }
   lace *= exp(-s * 1.8) * smoothstep(0.0, w, s);
-  o.foam = zone * (dense + 0.8 * lace);
+  o.foam = zone * (dense + 0.8 * lace) * (1.0 + 0.8 * si.y);            // breaking on a rocky shore throws up more white water
   return o;
 }
 

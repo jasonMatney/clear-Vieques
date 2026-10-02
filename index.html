@@ -28,6 +28,8 @@
     background: var(--panel); border: 1px solid var(--line); border-radius: 3px; -webkit-backdrop-filter: blur(22px) saturate(120%); backdrop-filter: blur(22px) saturate(120%);
     scrollbar-width: none; transition: opacity .25s, transform .25s; }
   #panel::-webkit-scrollbar { display: none; }
+  /* the overlay is controls and labels, not text to copy: a drag that starts on it (or strays onto it from the canvas) must not select it */
+  #panel, #brand, #statusTag, #hint, #hud { -webkit-user-select: none; user-select: none; }
   body.hidden #panel, body.hidden #brand, body.hidden #hint, body.hidden #hud, body.hidden #credit, body.hidden #statusTag { opacity: 0; pointer-events: none; }
   .eyebrow { margin: 0 0 9px; font: 400 9px/1 var(--sans); letter-spacing: 2px; color: var(--ink3); text-transform: uppercase; }
   section { padding-bottom: 12px; margin-bottom: 12px; border-bottom: 1px solid var(--line); }
