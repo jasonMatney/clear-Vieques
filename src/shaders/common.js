@@ -81,8 +81,16 @@ fn nearWeight(p : vec2<f32>) -> f32 {
   let d = min(min(p.x - o.x, o.x + s.x - p.x), min(p.y - o.y, o.y + s.y - p.y));
   return smoothstep(0.0, G.demInfo.x, d);
 }
+// The far grid (~14 x 10 km) is all the elevation data there is. Past its edge is treated as open sea, and the land sinks gently into it over the
+// last ~1-2 km (along an irregular line), instead of the clamped edge values running to the horizon as straight strips of land and sea.
+fn farEdgeFade(p : vec2<f32>) -> f32 {
+  let o = G.demFar.xy; let s = G.demFar.zw;
+  let d = min(min(p.x - o.x, o.x + s.x - p.x), min(p.y - o.y, o.y + s.y - p.y));
+  return smoothstep(150.0, 1700.0, d + 900.0 * (vnoise4(p * 0.0006 + vec2<f32>(2.7, 8.1)).r - 0.5));
+}
 fn heightFar(p : vec2<f32>) -> f32 {
-  return textureSampleLevel(demFarTex, samLin, (p - G.demFar.xy) / G.demFar.zw, 0.0).r;
+  let h = textureSampleLevel(demFarTex, samLin, (p - G.demFar.xy) / G.demFar.zw, 0.0).r;
+  return mix(-25.0, h, farEdgeFade(p));
 }
 fn heightNear(p : vec2<f32>) -> f32 {
   return textureSampleLevel(demNearTex, samLin, (p - G.demNear.xy) / G.demNear.zw, 0.0).r;
@@ -152,11 +160,24 @@ fn crownGrad(p : vec2<f32>, cr : Crown, tf : f32) -> vec2<f32> {
   return clamp(vec2<f32>(hx, hz) / (2.0 * e), vec2<f32>(-2.5), vec2<f32>(2.5));
 }
 // smooth stand height (m) and tree fraction on the 4 m near-DEM grid: used for shadows, reflections and the far view
+// Outside the near window there are no baked crowns: Vieques' hills are mostly dry forest, so the stand there is estimated from the far DEM
+// (forest above the coastal flats, thinner on the highest ground) with stand-scale variation. Blended into the baked stand at the window edge.
+fn farCanopy(p : vec2<f32>) -> vec2<f32> {
+  let e = heightFar(p) - seaLevel();
+  let n = vnoise4(p * 0.0035 + vec2<f32>(5.5, 1.2));
+  let tf = smoothstep(1.5, 7.0, e) * (1.0 - 0.35 * smoothstep(90.0, 220.0, e)) * smoothstep(0.25, 0.55, n.r * 0.8 + 0.2 * n.g + 0.12);
+  return vec2<f32>(tf * (4.0 + 2.0 * n.b), tf);
+}
 fn meanCanopy(p : vec2<f32>) -> vec2<f32> {
   let uv = (p - G.demNear.xy) / G.demNear.zw;
-  if (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) { return vec2<f32>(0.0); }
-  let m = textureSampleLevel(meanTex, samLin, uv, 0.0);
-  return vec2<f32>(m.x * G.crownB.z, m.y);
+  let w = nearWeight(p);
+  var near = vec2<f32>(0.0);
+  if (uv.x >= 0.0 && uv.y >= 0.0 && uv.x <= 1.0 && uv.y <= 1.0) {
+    let m = textureSampleLevel(meanTex, samLin, uv, 0.0);
+    near = vec2<f32>(m.x * G.crownB.z, m.y);
+    if (w >= 1.0) { return near; }
+  }
+  return mix(farCanopy(p), near, w);
 }
 // Shore character (baked with the canopy mean, 4 m): exposure to the waves 0..1, rockiness 0..1. Away from the near window: open, not rocky.
 fn shoreInfo(p : vec2<f32>) -> vec2<f32> {

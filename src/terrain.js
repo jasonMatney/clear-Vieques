@@ -78,8 +78,14 @@
       const r = this.nearRect, d = Math.min(x - r.x0, r.x1 - x, z - r.z0, r.z1 - z);
       return CV.smoothstep(0, this.blend, d);
     }
+    // past the far grid: open sea (the shader also sinks the last 1-2 km of land along an irregular line; the CPU side only needs it for camera
+    // collision and picking, so a straight fade is close enough)
+    farEdgeFade(x, z) {
+      const f = this.far, d = Math.min(x - f.x0, f.x0 + f.nx * f.dx - x, z - f.z0, f.z0 + f.nz * f.dz - z);
+      return CV.smoothstep(150, 1700, d);
+    }
     heightAt(x, z) {
-      const w = this.nearWeight(x, z), hf = this.sampleGrid(this.far, x, z);
+      const w = this.nearWeight(x, z), hf = CV.mix(-25, this.sampleGrid(this.far, x, z), this.farEdgeFade(x, z));
       return w > 0 ? CV.mix(hf, this.sampleGrid(this.near, x, z), w) : hf;
     }
 

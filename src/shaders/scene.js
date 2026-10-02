@@ -203,7 +203,15 @@ fn landMaterial(pxz : vec2<f32>, n : vec3<f32>, V : vec3<f32>, dist : f32, c : L
   groundCover = mix(groundCover, vec3<f32>(0.052, 0.042, 0.030) * (0.7 + 0.6 * g1.g), c.mangW);                 // mangrove mud
   // gusts sweep across the grass: blades bend over and show their paler sides in patches that run downwind
   groundCover *= 1.0 + 0.16 * windGust(pxz, nowT()) * min(G.windV.z / 9.0, 1.4) * (1.0 - c.mangW);
-  let meanCol = mix(groundCover, canopyMean, treeFrac);
+  var meanCol = mix(groundCover, canopyMean, treeFrac);
+  let farW = (1.0 - nearWeight(pxz)) * treeFrac;
+  if (farW > 0.01 && foot < 12.0) {
+    // forest outside the near window: individual crowns (~9 m) are wider than a pixel even where the mesh cannot carry them, so shade them as
+    // lit domes with dark gaps; tones vary crown to crown
+    let cf = crownField(pxz, 9.0);
+    let lit = mix(0.55, 1.15, smoothstep(0.75, 0.15, cf.x)) * (0.82 + 0.36 * fract(cf.y * 13.7));
+    meanCol *= mix(1.0, lit, farW * (1.0 - smoothstep(5.0, 12.0, foot)));
+  }
   var veg = meanCol; var occ = 1.0; var nAdd = vec3<f32>(0.0); var leafW = 0.0; var hTop = 0.0; var rimW = 0.0;
   if (resolved > 0.0) {
     var detailCol = groundCover;
@@ -464,7 +472,10 @@ fn swayOffset(xz : vec2<f32>, h : f32) -> vec3<f32> {
   let xz = vec2<f32>(M.info.x + (f32(i) + 0.5) * M.info.z, M.info.y + (f32(j) + 0.5) * M.info.w);
   var h : f32;
   var pos = vec3<f32>(xz.x, 0.0, xz.y);
-  if (M.dims.z > 0.5) { h = heightAt(xz) - 0.7 * nearWeight(xz); }   // far mesh: tucked under the near one where they overlap
+  if (M.dims.z > 0.5) {                                              // far mesh: tucked under the near one where they overlap; forest on its ridges
+    let nw = nearWeight(xz);
+    h = heightAt(xz) - 0.7 * nw + farCanopy(xz).x * (1.0 - nw);
+  }
   else { h = nearHeight(xz, 0.9, false); pos += swayOffset(xz, h); }
   var o : TVOut;
   o.wpos = vec3<f32>(pos.x, h, pos.z);
