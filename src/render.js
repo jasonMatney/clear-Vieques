@@ -126,6 +126,16 @@
       this.pTerrain = dev.createRenderPipeline({ label: 'terrain', layout: lay2, vertex: { module: mTerr, entryPoint: 'vs_terrain' },
         fragment: { module: mTerr, entryPoint: 'fs_terrain', targets: [{ format: hdr }] }, multisample: ms,
         primitive: { topology: 'triangle-list', cullMode: 'none' }, depthStencil: { ...depth, depthWriteEnabled: true } });
+      // 1 m tiles near the camera (instanced; per-instance tile origins in a small uniform array)
+      this.fineLayout = this.fineLayout || dev.createBindGroupLayout({ entries: [{ binding: 1, visibility: GPUShaderStage.VERTEX, buffer: { type: 'uniform' } }] });
+      if (!this.fineBuf) {
+        this.fineBuf = CV.buffer(gpu, 32 * 16, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, 'fineTiles');
+        this.fineBG = dev.createBindGroup({ layout: this.fineLayout, entries: [{ binding: 1, resource: { buffer: this.fineBuf } }] });
+        this.fineData = new Float32Array(32 * 4);
+      }
+      this.pTerrainFine = dev.createRenderPipeline({ label: 'terrainFine', layout: dev.createPipelineLayout({ bindGroupLayouts: [this.sceneLayout, this.fineLayout] }),
+        vertex: { module: mTerr, entryPoint: 'vs_terrain_fine' }, fragment: { module: mTerr, entryPoint: 'fs_terrain', targets: [{ format: hdr }] }, multisample: ms,
+        primitive: { topology: 'triangle-list', cullMode: 'none' }, depthStencil: { ...depth, depthWriteEnabled: true } });
       this.pStruct = this.structs.pipeline(this.sceneLayout, this.sampleCount);
       this.pWater = dev.createRenderPipeline({ label: 'water', layout: lay1, vertex: { module: mWater, entryPoint: 'vs_water' },
         fragment: { module: mWater, entryPoint: 'fs_water', targets: [{ format: hdr, blend: {
@@ -240,9 +250,21 @@
         const far = this.terrain.meshFar, near = this.terrain.meshNear;
         pass.setBindGroup(1, this.meshBG[1]); pass.setIndexBuffer(far.buf, 'uint32');
         for (const t of far.tiles) { if (t.y1 < seaY || !CV.boxInFrustum(planes, t)) continue; pass.drawIndexed(t.count, 1, t.first); drawn++; }
+        // near tiles within FINE_R of the camera are drawn at 1 m (instanced), the rest at 2 m
+        const FINE_R = 140, cx = s.cam.pos[0], cz = s.cam.pos[2], fd = this.fineData; let nFine = 0;
         pass.setBindGroup(1, this.meshBG[0]); pass.setIndexBuffer(near.idx, 'uint32');
-        for (const t of near.tiles) { if (t.y1 < seaY || !CV.boxInFrustum(planes, t)) continue; pass.drawIndexed(t.count, 1, 0, t.base); drawn++; }
-        this.tilesDrawn = drawn;
+        for (const t of near.tiles) {
+          if (t.y1 < seaY || !CV.boxInFrustum(planes, t)) continue;
+          const dx = Math.max(t.x0 - cx, 0, cx - t.x1), dz = Math.max(t.z0 - cz, 0, cz - t.z1);
+          if (nFine < 32 && Math.hypot(dx, dz) < FINE_R) { fd.set([t.x0, t.z0, near.fine.cell, 0], nFine * 4); nFine++; continue; }
+          pass.drawIndexed(t.count, 1, 0, t.base); drawn++;
+        }
+        if (nFine > 0) {
+          gpu.queue.writeBuffer(this.fineBuf, 0, fd, 0, nFine * 4);
+          pass.setPipeline(this.pTerrainFine); pass.setBindGroup(1, this.fineBG); pass.setIndexBuffer(near.fine.idx, 'uint32');
+          pass.drawIndexed(near.fine.count, nFine);
+        }
+        this.tilesDrawn = drawn; this.fineTilesDrawn = nFine;
       }
       if (!skip.terrain && this.structs.count > 0) {
         pass.setPipeline(this.pStruct); pass.setBindGroup(1, this.structs.bg); pass.setVertexBuffer(0, this.structs.vbuf);

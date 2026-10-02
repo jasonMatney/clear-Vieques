@@ -215,7 +215,15 @@
           for (let j = gc; j <= gd; j++) for (let i = ga; i <= gb; i++) { const h = n.h[j * n.nx + i]; if (h < hMin) hMin = h; if (h > hMax) hMax = h; }
           tiles.push({ base: j0 * nx + i0, count: T * T * 6, x0, x1, z0, z1, y0: hMin - 6, y1: hMax + canopyMax + 2 });
         }
-        return { idx, tiles, grid: { x0: n.x0, z0: n.z0, dx: cell, dz: cell, nx, nz } };
+        // the same tiles at 1 m (drawn instanced near the camera, see vs_terrain_fine): a 64x64-cell pattern on a local 65-wide vertex grid
+        const F = 2 * T, fpat = new Uint32Array(F * F * 6); k = 0;
+        for (let j = 0; j < F; j++) for (let i = 0; i < F; i++) {
+          const a = j * (F + 1) + i, b = a + 1, c = a + F + 1, d = c + 1;
+          fpat[k++] = a; fpat[k++] = c; fpat[k++] = b; fpat[k++] = b; fpat[k++] = c; fpat[k++] = d;
+        }
+        const fineIdx = device.createBuffer({ label: 'terrainIdxFine', size: fpat.byteLength, usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST });
+        queue.writeBuffer(fineIdx, 0, fpat);
+        return { idx, tiles, grid: { x0: n.x0, z0: n.z0, dx: cell, dz: cell, nx, nz }, fine: { idx: fineIdx, count: fpat.length, cell: cell / 2 } };
       };
       this.meshNear = buildNear();
       this.meshFar = buildFar(this.far);

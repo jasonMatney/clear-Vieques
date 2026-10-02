@@ -295,26 +295,70 @@ struct MeshU { info : vec4<f32>, dims : vec4<f32> };
 
 struct TVOut { @builtin(position) pos : vec4<f32>, @location(0) wpos : vec3<f32> };
 
+// Height of a near-mesh vertex: bare earth plus the tree canopy, which the near mesh carries so ridges have a tree-shaped skyline. A vertex grid
+// cannot represent a 5 m dome at a point: the analytic crown height is box-filtered over a footprint of +-r (half the vertex spacing, roughly).
+fn nearHeight(xz : vec2<f32>, r : f32, lumps : bool) -> f32 {
+  var h = heightAt(xz);
+  if (G.tint.w < 0.5) {
+    let tf = meanCanopy(xz).y; var ch = 0.0;
+    for (var k = 0; k < 4; k++) {
+      let q = xz + vec2<f32>(select(-r, r, (k & 1) == 1), select(-r, r, (k & 2) == 2));
+      ch += crownH(q, crownAt(q), tf);
+    }
+    ch *= 0.25;
+    if (ch > 0.0 && lumps) {
+      // 1 m tiles: the largest leaf clusters (the foliage texture's ~3 m octave, same placement as the shading) bulge the crown's surface, so
+      // silhouettes up close are lumpy rather than smooth domes. The texture's exposure channel is high on cluster tops, low in the clefts.
+      let cr = crownAt(xz);
+      let o = vec2<f32>(cr.id * 41.0, cr.id * 41.0 * 0.61);
+      let cs = vec2<f32>(0.9394, 0.3429);
+      let qf = vec2<f32>(cs.x * xz.x - cs.y * xz.y, cs.y * xz.x + cs.x * xz.y) / 20.0 + o;
+      let top = smoothstep(0.25, 0.75, crownProfile(crownRad(xz, cr), tf));
+      ch += (textureSampleLevel(foliageTex, samRep, qf, 2.2).b - 0.5) * 0.8 * top * min(cr.H * 0.25, 1.0);
+    }
+    if (ch > 0.0) { ch *= treeLine(xz, terrainNormal(xz, 4.0), auxAt(xz), length(G.camPos.xyz - vec3<f32>(xz.x, h, xz.y))); }
+    h += max(ch, 0.0);
+  }
+  return h;
+}
+
 @vertex fn vs_terrain(@builtin(vertex_index) vid : u32) -> TVOut {
   let nx = u32(M.dims.x);
   let i = vid % nx; let j = vid / nx;
   let xz = vec2<f32>(M.info.x + (f32(i) + 0.5) * M.info.z, M.info.y + (f32(j) + 0.5) * M.info.w);
-  var h = heightAt(xz);
-  if (M.dims.z > 0.5) { h -= 0.7 * nearWeight(xz); }
-  else if (G.tint.w < 0.5) {   // tree crowns: the near mesh carries the canopy so ridges have a tree-shaped skyline
-    // a 2 m vertex grid cannot represent a 5 m dome: sample the analytic crown height on a 2x2 footprint (box filter) instead of one aliased point
-    let tf = meanCanopy(xz).y; var ch = 0.0;
-    for (var k = 0; k < 4; k++) {
-      let q = xz + vec2<f32>(select(-0.9, 0.9, (k & 1) == 1), select(-0.9, 0.9, (k & 2) == 2));
-      ch += crownH(q, crownAt(q), tf);
-    }
-    if (ch > 0.0) { ch *= treeLine(xz, terrainNormal(xz, 4.0), auxAt(xz), length(G.camPos.xyz - vec3<f32>(xz.x, h, xz.y))); }
-    h += 0.25 * ch;
-  }
+  var h : f32;
+  if (M.dims.z > 0.5) { h = heightAt(xz) - 0.7 * nearWeight(xz); }   // far mesh: tucked under the near one where they overlap
+  else { h = nearHeight(xz, 0.9, false); }
   var o : TVOut;
   o.wpos = vec3<f32>(xz.x, h, xz.y);
   o.pos = G.viewProj * vec4<f32>(o.wpos, 1.0);
   return o;
+}
+
+// Near-mesh tiles close to the camera are drawn at 1 m instead of 2 m (one instance per tile), so crowns keep round outlines up close.
+// A fine tile's border must meet its coarse neighbours without cracks: border vertices on the 2 m lattice use the coarse height function,
+// and the ones between them lie on the straight coarse edge (the mean of their two neighbours).
+struct FineTiles { t : array<vec4<f32>, 32> };   // xy: the tile's first vertex (on the 2 m lattice), z: cell (m), w: unused
+@group(1) @binding(1) var<uniform> FT : FineTiles;
+const FINE_N : u32 = 64u;
+@vertex fn vs_terrain_fine(@builtin(vertex_index) vid : u32, @builtin(instance_index) iid : u32) -> TVOut {
+  let o = FT.t[iid];
+  let kx = vid % (FINE_N + 1u); let kz = vid / (FINE_N + 1u);
+  let xz = o.xy + vec2<f32>(f32(kx), f32(kz)) * o.z;
+  let edgeZ = kz == 0u || kz == FINE_N; let edgeX = kx == 0u || kx == FINE_N;
+  var h : f32;
+  if (edgeZ && (kx & 1u) == 1u) { h = 0.5 * (nearHeight(xz - vec2<f32>(o.z, 0.0), 0.9, false) + nearHeight(xz + vec2<f32>(o.z, 0.0), 0.9, false)); }
+  else if (edgeX && (kz & 1u) == 1u) { h = 0.5 * (nearHeight(xz - vec2<f32>(0.0, o.z), 0.9, false) + nearHeight(xz + vec2<f32>(0.0, o.z), 0.9, false)); }
+  else if (edgeX || edgeZ) { h = nearHeight(xz, 0.9, false); }
+  else {
+    // the lumps fade in over the first few cells from the border, so the tile still meets its coarse neighbours exactly
+    let edge = f32(min(min(kx, FINE_N - kx), min(kz, FINE_N - kz)));
+    h = mix(nearHeight(xz, 0.9, false), nearHeight(xz, 0.45, true), smoothstep(1.0, 6.0, edge));
+  }
+  var out : TVOut;
+  out.wpos = vec3<f32>(xz.x, h, xz.y);
+  out.pos = G.viewProj * vec4<f32>(out.wpos, 1.0);
+  return out;
 }
 
 // Radiance of a lit ground point (shared by the terrain pass and by reflections in water).
