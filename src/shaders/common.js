@@ -38,6 +38,7 @@
     ['bio', 'vec4'],       // bioluminescence: site intensity, spark rate, glow gain, -
     ['paddle', 'vec4'],    // virtual paddle blade: x, z, radius (m), active
     ['frame', 'vec4'],     // TAA: frame index (mod 64, seeds per-pixel noise), jitter x, y (NDC), enabled
+    ['windV', 'vec4'],     // direction the wind blows toward (x, z, unit), speed (m/s), -
     ['st0', 'vec4'], ['st1', 'vec4'], ['st2', 'vec4'], ['st3', 'vec4'],   // OSM shelters: x, z, yaw, roof half extent (0 = unused)
     ['st4', 'vec4'], ['st5', 'vec4'], ['st6', 'vec4'], ['st7', 'vec4'],
   ];
@@ -395,6 +396,24 @@ fn waveSlopeAt(xz : vec2<f32>, d : f32, footAlong : f32) -> vec4<f32> {
     lost += (1.0 - keep * keep) * mss * e * e;
   }
   return vec4<f32>(s2, foam, lost);
+}
+
+// ------------------------------------------------------------------ wind in the vegetation
+// Horizontal sway (m per m of height above the ground) at p: a steady lean downwind plus gusts that travel downwind across the land as patches
+// a few tens of metres wide, each plant's own sway frequency, and a little turbulence. Grows with the wind speed.
+fn windGust(p : vec2<f32>, t : f32) -> f32 {                        // 0..1, a pattern of gusts advected downwind
+  let gq = p - G.windV.xy * (t * G.windV.z * 0.7);
+  return smoothstep(0.30, 0.85, vnoise4(gq * 0.018 + vec2<f32>(2.1, 5.3)).r);
+}
+fn windSway(p : vec2<f32>, t : f32, phase : f32) -> vec2<f32> {
+  let d = G.windV.xy; let U = G.windV.z;
+  if (U < 0.2) { return vec2<f32>(0.0); }
+  let k = min(U / 9.0, 1.4);
+  let gust = windGust(p, t);
+  let osc = sin(t * (1.6 + 0.6 * phase) + phase * 17.0 + dot(p, d) * 0.08);
+  let turb = vnoise4(p * 0.11 + vec2<f32>(t * 0.35, -t * 0.27)).g - 0.5;
+  let perp = vec2<f32>(-d.y, d.x);
+  return (d * (0.012 + 0.035 * gust + 0.016 * gust * osc) + perp * (0.012 * turb + 0.006 * osc)) * k;
 }
 
 // ------------------------------------------------------------------ surf: broken waves (bores) running up the beach

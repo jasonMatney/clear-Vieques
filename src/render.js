@@ -206,6 +206,8 @@
       G.set('bio', night ? (s.biolum || 0) : 0, 1, adapt, 0);
       G.set('paddle', ...(s.paddle || [0, 0, 0, 0]));
       G.set('frame', ...(this.frameInfo || [0, 0, 0, 0]));
+      const wa = CV.Waves.travelAngle(this.waves.params.windDirDeg);   // the same direction the wind sea travels
+      G.set('windV', Math.cos(wa), Math.sin(wa), this.waves.params.wind, 0);
       const j = CV.jerlov(s.turbidity);
       G.set('kAbs', j.K[0], j.K[1], j.K[2], sea);
       G.set('rDeep', j.R[0] * s.deepGain, j.R[1] * s.deepGain, j.R[2] * s.deepGain, s.turbidity);

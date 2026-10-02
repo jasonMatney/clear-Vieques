@@ -144,6 +144,8 @@ fn landMaterial(pxz : vec2<f32>, n : vec3<f32>, V : vec3<f32>, dist : f32, c : L
   groundCover = mix(groundCover, vec3<f32>(0.060, 0.082, 0.032), smoothstep(0.62, 0.86, g1.g) * 0.55);          // green tufts
   groundCover = mix(groundCover, vec3<f32>(0.19, 0.15, 0.10), smoothstep(0.80, 0.95, g2.r) * 0.35);            // bare soil flecks
   groundCover = mix(groundCover, vec3<f32>(0.052, 0.042, 0.030) * (0.7 + 0.6 * g1.g), c.mangW);                 // mangrove mud
+  // gusts sweep across the grass: blades bend over and show their paler sides in patches that run downwind
+  groundCover *= 1.0 + 0.16 * windGust(pxz, nowT()) * min(G.windV.z / 9.0, 1.4) * (1.0 - c.mangW);
   let meanCol = mix(groundCover, canopyMean, treeFrac);
   var veg = meanCol; var occ = 1.0; var nAdd = vec3<f32>(0.0); var leafW = 0.0; var hTop = 0.0; var rimW = 0.0;
   if (resolved > 0.0) {
@@ -161,7 +163,10 @@ fn landMaterial(pxz : vec2<f32>, n : vec3<f32>, V : vec3<f32>, dist : f32, c : L
       let ls = fadeN(vnoise4(pxz * 7.3 + vec2<f32>(5.0, idv * 9.0)), dist, 8.0, 70.0);               // leaf speckle (~15 cm)
       leaf *= (0.78 + 0.44 * ln.r) * (0.86 + 0.28 * ls.g);
       // leaf-cluster structure: every cluster has its own tint (fresh yellow-green flush, blue-green shade leaves) and the pile has creases and relief
-      let fol = foliage(pxz, foot, idv * 41.0);
+      var fol = foliage(pxz, foot, idv * 41.0);
+      // flutter: leaf clusters tilt back and forth in the wind, so the light on them flickers (stronger in gusts, gone at range)
+      let fl = vnoise4(pxz * 0.9 + G.windV.xy * (nowT() * 2.4) + vec2<f32>(idv * 9.0, 0.0)).rg - 0.5;
+      fol.g += fl * (0.45 * min(G.windV.z / 9.0, 1.4) * (0.4 + windGust(pxz, nowT())) * (1.0 - smoothstep(60.0, 220.0, dist)));
       leaf *= 1.0 + 0.50 * fol.tone;
       leaf = mix(leaf, leaf * vec3<f32>(1.30, 1.22, 0.62), smoothstep(0.10, 0.45, fol.tone) * (1.0 - c.mangW) * 0.5);
       leaf = mix(leaf, leaf * vec3<f32>(0.72, 0.95, 1.18), smoothstep(-0.12, -0.50, fol.tone) * 0.6);
@@ -169,7 +174,7 @@ fn landMaterial(pxz : vec2<f32>, n : vec3<f32>, V : vec3<f32>, dist : f32, c : L
       let floorFol = smoothstep(0.55, 0.90, treeFrac) * (1.0 - smoothstep(1.30, 2.10, rr));
       // leaf litter lies under the crown and just past its drip line; further out it is the open ground cover (a texel's crown can be one whose
       // canopy is metres away, and its region ends on straight Voronoi edges, so the litter must follow the crown radius, not the texel)
-      let litter = 1.0 - smoothstep(1.0, 1.6, rr);
+      let litter = max(1.0 - smoothstep(1.0, 1.6, rr), smoothstep(0.40, 0.75, treeFrac));   // inside a closed stand the whole floor is litter
       detailCol = mix(mix(mix(groundCover, under * (0.7 + 0.6 * ln.g), litter), leafDark * 0.75 * (0.8 + 0.4 * ln.g), floorFol), leaf, inCrown);
       // light and shade come from the dome itself: tilted normal, dark low gaps, bright tops. Gaps between crowns are only visible when
       // looking down into the canopy; at grazing angles the crowns in front hide them (this removes the dark rim along ridges).
@@ -352,7 +357,7 @@ struct SkyVOut { @builtin(position) pos : vec4<f32>, @location(0) ndc : vec2<f32
 struct MeshU { info : vec4<f32>, dims : vec4<f32> };
 @group(1) @binding(0) var<uniform> M : MeshU;
 
-struct TVOut { @builtin(position) pos : vec4<f32>, @location(0) wpos : vec3<f32> };
+struct TVOut { @builtin(position) pos : vec4<f32>, @location(0) wpos : vec3<f32>, @location(1) rest : vec2<f32> };   // rest: ground position before wind sway
 
 // Height of a near-mesh vertex: bare earth plus the tree canopy, which the near mesh carries so ridges have a tree-shaped skyline. A vertex grid
 // cannot represent a 5 m dome at a point: the analytic crown height is box-filtered over a footprint of +-r (half the vertex spacing, roughly).
@@ -381,15 +386,28 @@ fn nearHeight(xz : vec2<f32>, r : f32, lumps : bool) -> f32 {
   return h;
 }
 
+// Crowns sway in the wind: the canopy surface moves downwind by windSway x its height above the ground (the ground itself stays put).
+// Only within ~250 m, where the motion is a fraction of a pixel or more.
+fn swayOffset(xz : vec2<f32>, h : f32) -> vec3<f32> {
+  let above = h - heightAt(xz);
+  let d = length(G.camPos.xz - xz);
+  if (above < 0.3 || d > 260.0) { return vec3<f32>(0.0); }
+  let cr = crownAt(xz);
+  let s = windSway(xz, nowT(), fract(cr.id * 13.1)) * above * (1.0 - smoothstep(180.0, 260.0, d));
+  return vec3<f32>(s.x, 0.0, s.y);
+}
+
 @vertex fn vs_terrain(@builtin(vertex_index) vid : u32) -> TVOut {
   let nx = u32(M.dims.x);
   let i = vid % nx; let j = vid / nx;
   let xz = vec2<f32>(M.info.x + (f32(i) + 0.5) * M.info.z, M.info.y + (f32(j) + 0.5) * M.info.w);
   var h : f32;
+  var pos = vec3<f32>(xz.x, 0.0, xz.y);
   if (M.dims.z > 0.5) { h = heightAt(xz) - 0.7 * nearWeight(xz); }   // far mesh: tucked under the near one where they overlap
-  else { h = nearHeight(xz, 0.9, false); }
+  else { h = nearHeight(xz, 0.9, false); pos += swayOffset(xz, h); }
   var o : TVOut;
-  o.wpos = vec3<f32>(xz.x, h, xz.y);
+  o.wpos = vec3<f32>(pos.x, h, pos.z);
+  o.rest = xz;
   o.pos = G.viewProj * vec4<f32>(o.wpos, 1.0);
   return o;
 }
@@ -406,16 +424,25 @@ const FINE_N : u32 = 64u;
   let xz = o.xy + vec2<f32>(f32(kx), f32(kz)) * o.z;
   let edgeZ = kz == 0u || kz == FINE_N; let edgeX = kx == 0u || kx == FINE_N;
   var h : f32;
-  if (edgeZ && (kx & 1u) == 1u) { h = 0.5 * (nearHeight(xz - vec2<f32>(o.z, 0.0), 0.9, false) + nearHeight(xz + vec2<f32>(o.z, 0.0), 0.9, false)); }
-  else if (edgeX && (kz & 1u) == 1u) { h = 0.5 * (nearHeight(xz - vec2<f32>(0.0, o.z), 0.9, false) + nearHeight(xz + vec2<f32>(0.0, o.z), 0.9, false)); }
-  else if (edgeX || edgeZ) { h = nearHeight(xz, 0.9, false); }
+  var sw = vec3<f32>(0.0);
+  if (edgeZ && (kx & 1u) == 1u) {
+    let a = xz - vec2<f32>(o.z, 0.0); let b = xz + vec2<f32>(o.z, 0.0);
+    let ha = nearHeight(a, 0.9, false); let hb = nearHeight(b, 0.9, false);
+    h = 0.5 * (ha + hb); sw = 0.5 * (swayOffset(a, ha) + swayOffset(b, hb));
+  } else if (edgeX && (kz & 1u) == 1u) {
+    let a = xz - vec2<f32>(0.0, o.z); let b = xz + vec2<f32>(0.0, o.z);
+    let ha = nearHeight(a, 0.9, false); let hb = nearHeight(b, 0.9, false);
+    h = 0.5 * (ha + hb); sw = 0.5 * (swayOffset(a, ha) + swayOffset(b, hb));
+  } else if (edgeX || edgeZ) { h = nearHeight(xz, 0.9, false); sw = swayOffset(xz, h); }
   else {
     // the lumps fade in over the first few cells from the border, so the tile still meets its coarse neighbours exactly
     let edge = f32(min(min(kx, FINE_N - kx), min(kz, FINE_N - kz)));
     h = mix(nearHeight(xz, 0.9, false), nearHeight(xz, 0.45, true), smoothstep(1.0, 6.0, edge));
+    sw = swayOffset(xz, h);
   }
   var out : TVOut;
-  out.wpos = vec3<f32>(xz.x, h, xz.y);
+  out.wpos = vec3<f32>(xz.x + sw.x, h, xz.y + sw.z);                 // border vertices sway exactly as the 2 m tile beside them
+  out.rest = xz;
   out.pos = G.viewProj * vec4<f32>(out.wpos, 1.0);
   return out;
 }
@@ -517,8 +544,9 @@ fn shadeLand(p : vec3<f32>, V : vec3<f32>, dist : f32, withShadow : bool, jit : 
 }
 
 @fragment fn fs_terrain(in : TVOut) -> @location(0) vec4<f32> {
-  let p = in.wpos;
-  let toCam = G.camPos.xyz - p;
+  // shade at the rest position: the leaf texture and crown shading travel with the swaying canopy instead of sliding across it
+  let p = vec3<f32>(in.rest.x, in.wpos.y, in.rest.y);
+  let toCam = G.camPos.xyz - in.wpos;
   let dist = length(toCam);
   if (p.y < seaLevel() - 0.6) { return vec4<f32>(0.020, 0.050, 0.060, 1.0); } // submerged: covered by the water pass
   if (G.tint.x > 6.5 && G.tint.x < 7.5) {   // diagnostics: (sand, rock, foliage cover)
