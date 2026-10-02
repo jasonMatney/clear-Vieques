@@ -465,7 +465,7 @@ fn shadeLand(p : vec3<f32>, V : vec3<f32>, dist : f32, withShadow : bool, jit : 
     let mt = landMaterial(p.xz, nG, toCam / dist, dist, cls);
     return vec4<f32>(mt.sandW, mt.rockW, mt.canopy, 1.0);
   }
-  let jit = hash21(in.pos.xy);
+  let jit = hash21(in.pos.xy + G.frame.x * vec2<f32>(7.13, 3.71));   // rotates per frame under TAA, which averages it out
   var col = shadeLand(p, toCam / dist, dist, true, jit);
   col = applyFog(col, dist);
   if (gHole > 0.5) { let d = -toCam / dist; col = skyWithClouds(vec3<f32>(d.x, max(d.y, 0.03), d.z)); }
@@ -572,7 +572,7 @@ fn reflectedLand(q : vec3<f32>, R : vec3<f32>, distTotal : f32) -> vec3<f32> {
   let alpha = smoothstep(0.0, 0.05, H);
   if (alpha <= 0.0) { discard; }
 
-  let jit = hash21(in.pos.xy);
+  let jit = hash21(in.pos.xy + G.frame.x * vec2<f32>(7.13, 3.71));   // rotates per frame under TAA, which averages it out
   let K = kAbs();
 
   // ---- reflection: sky, terrain (headlands / forest) and the sun
@@ -726,7 +726,7 @@ fn reflectedLand(q : vec3<f32>, R : vec3<f32>, distTotal : f32) -> vec3<f32> {
   CV.wgsl.post = /* wgsl */`
 @group(0) @binding(0) var hdr : texture_2d<f32>;
 @group(0) @binding(1) var samP : sampler;
-@group(0) @binding(2) var<uniform> PP : array<vec4<f32>, 2>;   // [0] exposure, vignette, time, saturation ; [1] raw-debug flag, source w, source h, -
+@group(0) @binding(2) var<uniform> PP : array<vec4<f32>, 3>;   // [0] exposure, vignette, time, saturation ; [1] raw-debug flag, source w, source h, night ; [2] sharpen, -
 @group(0) @binding(3) var ldr : texture_2d<f32>;
 struct VOut { @builtin(position) pos : vec4<f32>, @location(0) uv : vec2<f32> };
 @vertex fn vs(@builtin(vertex_index) vid : u32) -> VOut {
@@ -767,13 +767,25 @@ fn grade(raw : vec3<f32>, uv : vec2<f32>) -> vec3<f32> {
 fn dither(pos : vec2<f32>) -> f32 {
   return (fract(sin(dot(pos, vec2<f32>(12.9898, 78.233)) + PP[0].z) * 43758.5453) - 0.5) / 255.0;
 }
+// After TAA the image is slightly soft (the jitter integrates over the pixel): a light unsharp mask against the four neighbours, clamped to their
+// range so it cannot overshoot into halos.
+fn fetchSharp(uv : vec2<f32>) -> vec3<f32> {
+  let c = textureSampleLevel(hdr, samP, uv, 0.0).rgb;
+  let k = PP[2].x;
+  if (k <= 0.0) { return c; }
+  let px = 1.0 / vec2<f32>(PP[1].y, PP[1].z);
+  let a = textureSampleLevel(hdr, samP, uv + vec2<f32>(px.x, 0.0), 0.0).rgb; let b = textureSampleLevel(hdr, samP, uv - vec2<f32>(px.x, 0.0), 0.0).rgb;
+  let d = textureSampleLevel(hdr, samP, uv + vec2<f32>(0.0, px.y), 0.0).rgb; let e = textureSampleLevel(hdr, samP, uv - vec2<f32>(0.0, px.y), 0.0).rgb;
+  let mn = min(c, min(min(a, b), min(d, e))); let mx = max(c, max(max(a, b), max(d, e)));
+  return clamp(c + (c - 0.25 * (a + b + d + e)) * k, mn, mx);
+}
 @fragment fn fs(in : VOut) -> @location(0) vec4<f32> {   // native resolution: grade + dither to the canvas
-  let raw = textureSampleLevel(hdr, samP, in.uv, 0.0).rgb;
+  let raw = fetchSharp(in.uv);
   if (PP[1].x > 0.5) { return vec4<f32>(clamp(raw, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0); }   // diagnostics: linear values straight to the framebuffer
   return vec4<f32>(grade(raw, in.uv) + dither(in.pos.xy), 1.0);
 }
 @fragment fn fs_grade(in : VOut) -> @location(0) vec4<f32> {   // internal resolution: grade into the LDR texture
-  let raw = textureSampleLevel(hdr, samP, in.uv, 0.0).rgb;
+  let raw = fetchSharp(in.uv);
   if (PP[1].x > 0.5) { return vec4<f32>(clamp(raw, vec3<f32>(0.0), vec3<f32>(1.0)), 1.0); }
   return vec4<f32>(grade(raw, in.uv), 1.0);
 }

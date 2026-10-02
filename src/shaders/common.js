@@ -37,6 +37,7 @@
     ['night', 'vec4'],     // moon relative illuminance, signed phase angle (rad, + waxing), light gain K, star visibility
     ['bio', 'vec4'],       // bioluminescence: site intensity, spark rate, glow gain, -
     ['paddle', 'vec4'],    // virtual paddle blade: x, z, radius (m), active
+    ['frame', 'vec4'],     // TAA: frame index (mod 64, seeds per-pixel noise), jitter x, y (NDC), enabled
     ['st0', 'vec4'], ['st1', 'vec4'], ['st2', 'vec4'], ['st3', 'vec4'],   // OSM shelters: x, z, yaw, roof half extent (0 = unused)
     ['st4', 'vec4'], ['st5', 'vec4'], ['st6', 'vec4'], ['st7', 'vec4'],
   ];

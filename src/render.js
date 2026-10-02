@@ -42,6 +42,7 @@
       this.debugView = 0;
       this.structs = new CV.Structures(gpu);
       this.timer = new CV.GpuTimer(gpu);
+      this.taa = new CV.TAA(gpu);
       this.ready = this.init();
     }
 
@@ -86,7 +87,7 @@
       this.upBGL = dev.createBindGroupLayout({ entries: [
         { binding: 2, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
         { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } }] });
-      this.pBuf = CV.buffer(gpu, 32, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, 'postU');
+      this.pBuf = CV.buffer(gpu, 48, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, 'postU');
       this.buildPipelines();
     }
 
@@ -142,6 +143,7 @@
           color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
           alpha: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' } } }] }, multisample: ms,
         primitive: { topology: 'triangle-list', cullMode: 'none' }, depthStencil: { ...depth, depthWriteEnabled: true } });
+      this.taa.pipeline(this.sampleCount);
       const postLay = dev.createPipelineLayout({ bindGroupLayouts: [this.postBGL] });
       this.pPost = dev.createRenderPipeline({ label: 'post', layout: postLay,
         vertex: { module: mPost, entryPoint: 'vs' }, fragment: { module: mPost, entryPoint: 'fs', targets: [{ format: this.gpu.format }] } });
@@ -162,11 +164,14 @@
       const RA = GPUTextureUsage.RENDER_ATTACHMENT;
       this.hdr = dev.createTexture({ label: 'hdr', size: [w, h], format: 'rgba16float', usage: RA | GPUTextureUsage.TEXTURE_BINDING });
       this.hdrMS = this.sampleCount > 1 ? dev.createTexture({ label: 'hdrMS', size: [w, h], format: 'rgba16float', sampleCount: this.sampleCount, usage: RA }) : null;
-      this.depth = dev.createTexture({ label: 'depth', size: [w, h], format: 'depth32float', sampleCount: this.sampleCount, usage: RA });
+      this.depth = dev.createTexture({ label: 'depth', size: [w, h], format: 'depth32float', sampleCount: this.sampleCount, usage: RA | GPUTextureUsage.TEXTURE_BINDING });
       this.ldr = up ? dev.createTexture({ label: 'ldr', size: [w, h], format: 'rgba8unorm', usage: RA | GPUTextureUsage.TEXTURE_BINDING }) : null;
       this.hdrView = this.hdr.createView(); this.hdrMSView = this.hdrMS && this.hdrMS.createView(); this.depthView = this.depth.createView();
       this.ldrView = this.ldr && this.ldr.createView();
-      this.postBG = dev.createBindGroup({ layout: this.postBGL, entries: [{ binding: 0, resource: this.hdrView }, { binding: 1, resource: this.samPost }, { binding: 2, resource: { buffer: this.pBuf } }] });
+      const postBG = (view) => dev.createBindGroup({ layout: this.postBGL, entries: [{ binding: 0, resource: view }, { binding: 1, resource: this.samPost }, { binding: 2, resource: { buffer: this.pBuf } }] });
+      this.postBG = postBG(this.hdrView);
+      this.taa.resize(w, h, this.hdrView, this.depthView);              // history pair; grading then reads whichever holds this frame's result
+      this.postBGTaa = this.taa.views.map(postBG);
       this.upBG = up ? dev.createBindGroup({ layout: this.upBGL, entries: [{ binding: 2, resource: { buffer: this.pBuf } }, { binding: 3, resource: this.ldrView }] }) : null;
     }
 
@@ -195,6 +200,7 @@
       const adapt = night ? Math.min(Math.pow(CV.Night.FULL / K, 0.82), 5) : 1;
       G.set('bio', night ? (s.biolum || 0) : 0, 1, adapt, 0);
       G.set('paddle', ...(s.paddle || [0, 0, 0, 0]));
+      G.set('frame', ...(this.frameInfo || [0, 0, 0, 0]));
       const j = CV.jerlov(s.turbidity);
       G.set('kAbs', j.K[0], j.K[1], j.K[2], sea);
       G.set('rDeep', j.R[0] * s.deepGain, j.R[1] * s.deepGain, j.R[2] * s.deepGain, s.turbidity);
@@ -226,6 +232,15 @@
       const cam = s.cam;
       const sunVec = [Math.sin(s.sunAz * CV.D2R) * Math.cos(s.sunElev * CV.D2R), Math.sin(s.sunElev * CV.D2R), -Math.cos(s.sunAz * CV.D2R) * Math.cos(s.sunElev * CV.D2R)];
       this.caustics.place(s.causticCenter, s.meanDepth, sunVec);   // fixes the map window BEFORE the globals that describe it are written
+      // TAA: offset the projection by this frame's sub-pixel jitter (the unjittered camera basis is what the TAA pass reprojects with)
+      const taa = this.taa.enabled && !this.capturing;
+      let jit = [0, 0];
+      if (taa) {
+        jit = this.taa.jitter(this.width, this.height);
+        const J = CV.m4.identity(); J[12] = jit[0]; J[13] = jit[1];
+        s.cam.viewProj = CV.m4.mul(J, s.cam.viewProj);
+      }
+      this.frameInfo = [taa ? this.taa.frame % 64 : 0, jit[0], jit[1], taa ? 1 : 0];
       this.updateGlobals(s);
       const enc = dev.createCommandEncoder({ label: 'frame' });
       const cur = this.waves.encode(enc, s.time, s.dt, this.timer.first());
@@ -237,7 +252,7 @@
       const ms = this.sampleCount > 1;
       const pass = enc.beginRenderPass({ label: 'scene',
         colorAttachments: [{ view: ms ? this.hdrMSView : this.hdrView, resolveTarget: ms ? this.hdrView : undefined, loadOp: 'clear', clearValue: [0, 0, 0, 1], storeOp: ms ? 'discard' : 'store' }],
-        depthStencilAttachment: { view: this.depthView, depthLoadOp: 'clear', depthClearValue: 0, depthStoreOp: 'discard' },
+        depthStencilAttachment: { view: this.depthView, depthLoadOp: 'clear', depthClearValue: 0, depthStoreOp: taa ? 'store' : 'discard' },
         timestampWrites: CV.prof ? CV.tw('scene') : this.timer.last() });   // end of the offscreen scene pass: excludes the swap-chain (vsync) wait of the post pass
       pass.setBindGroup(0, this.sceneBG[cur]);
       const skip = this.skip || {};
@@ -272,15 +287,17 @@
       }
       if (!skip.water) { pass.setPipeline(this.pWater); pass.setIndexBuffer(this.waterIdx, 'uint32'); pass.drawIndexed(this.waterIdxCount); }
       pass.end();
-      gpu.queue.writeBuffer(this.pBuf, 0, new Float32Array([s.exposureLin, s.vignette, (s.time * 60) % 1000, 1.12, this.debugView === 7 ? 1 : 0, this.width, this.height, s.night ? 1 : 0]));
+      const postBG = taa ? this.postBGTaa[this.taa.encode(enc, s.cam, jit, 0.12)] : this.postBG;
+      gpu.queue.writeBuffer(this.pBuf, 0, new Float32Array([s.exposureLin, s.vignette, (s.time * 60) % 1000, 1.12, this.debugView === 7 ? 1 : 0, this.width, this.height, s.night ? 1 : 0,
+        taa ? 0.8 : 0, 0, 0, 0]));
       if (this.upscale) {
         const g = enc.beginRenderPass({ label: 'grade', timestampWrites: CV.tw('grade'), colorAttachments: [{ view: this.ldrView, loadOp: 'clear', clearValue: [0, 0, 0, 1], storeOp: 'store' }] });
-        g.setPipeline(this.pGrade); g.setBindGroup(0, this.postBG); g.draw(3); g.end();
+        g.setPipeline(this.pGrade); g.setBindGroup(0, postBG); g.draw(3); g.end();
         const u = enc.beginRenderPass({ label: 'upscale', timestampWrites: CV.tw('upscale'), colorAttachments: [{ view: targetView, loadOp: 'clear', clearValue: [0, 0, 0, 1], storeOp: 'store' }] });
         u.setPipeline(this.pUp); u.setBindGroup(0, this.upBG); u.draw(3); u.end();
       } else {
         const post = enc.beginRenderPass({ label: 'post', timestampWrites: CV.tw('post'), colorAttachments: [{ view: targetView, loadOp: 'clear', clearValue: [0, 0, 0, 1], storeOp: 'store' }] });
-        post.setPipeline(this.pPost); post.setBindGroup(0, this.postBG); post.draw(3); post.end();
+        post.setPipeline(this.pPost); post.setBindGroup(0, postBG); post.draw(3); post.end();
       }
       if (CV.prof) CV.prof.finish(enc); else this.timer.resolveInto(enc);
       dev.queue.submit([enc.finish()]);
@@ -292,7 +309,9 @@
       const gpu = this.gpu, dev = gpu.device, fmt = gpu.format;
       const tex = dev.createTexture({ size: [w, h], format: fmt, usage: GPUTextureUsage.RENDER_ATTACHMENT | GPUTextureUsage.COPY_SRC });
       const savedScale = this.scale; this.scale = 1;
+      this.capturing = true;                                          // a one-off frame at another size: no jitter, no history
       this.frame(state, tex.createView(), w, h);
+      this.capturing = false;
       const bpr = Math.ceil(w * 4 / 256) * 256;
       const buf = dev.createBuffer({ size: bpr * h, usage: GPUBufferUsage.COPY_DST | GPUBufferUsage.MAP_READ });
       const enc = dev.createCommandEncoder(); enc.copyTextureToBuffer({ texture: tex }, { buffer: buf, bytesPerRow: bpr }, [w, h]); dev.queue.submit([enc.finish()]);
