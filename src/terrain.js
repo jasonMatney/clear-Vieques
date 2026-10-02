@@ -147,7 +147,7 @@
 
     // Free GPU resources (site switch).
     destroy() {
-      for (const t of [this.demNear, this.demFar, this.auxTex, this.crownTex, this.meanTex]) if (t) t.destroy();
+      for (const t of [this.demNear, this.demFar, this.auxTex, this.crownTex, this.meanTex, this.cells && this.cells.tex]) if (t) t.destroy();
       for (const m of [this.meshFar && this.meshFar.buf, this.meshNear && this.meshNear.idx]) if (m) m.destroy();
     }
 

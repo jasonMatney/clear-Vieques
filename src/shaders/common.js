@@ -39,6 +39,7 @@
     ['paddle', 'vec4'],    // virtual paddle blade: x, z, radius (m), active
     ['frame', 'vec4'],     // TAA: frame index (mod 64, seeds per-pixel noise), jitter x, y (NDC), enabled
     ['windV', 'vec4'],     // direction the wind blows toward (x, z, unit), speed (m/s), -
+    ['trees', 'vec4'],     // 3D trees near the camera: fade start, fade end (m from the camera to the crown centre), enabled, -
     ['st0', 'vec4'], ['st1', 'vec4'], ['st2', 'vec4'], ['st3', 'vec4'],   // OSM shelters: x, z, yaw, roof half extent (0 = unused)
     ['st4', 'vec4'], ['st5', 'vec4'], ['st6', 'vec4'], ['st7', 'vec4'],
   ];
@@ -136,6 +137,11 @@ fn crownAt(p : vec2<f32>) -> Crown {
   let ti = vec2<i32>(floor(t));
   let d = textureLoad(crownTex, ti, 0);
   return crownShape((vec2<f32>(ti) + 0.5) * G.crownA.z + G.crownA.xy + (d.xy - 0.5) * CROWN_OFF, d.z * G.crownB.z, d.w);
+}
+// 1 where a crown is drawn as a 3D tree (CV.Trees), 0 where it is a dome on the terrain; in between both, dissolving into each other
+fn tree3DW(c : vec2<f32>) -> f32 {
+  if (G.trees.z < 0.5) { return 0.0; }
+  return 1.0 - smoothstep(G.trees.x, G.trees.y, length(c - G.camPos.xz));
 }
 // distance from the crown centre in crown radii (elliptical metric)
 fn crownRad(p : vec2<f32>, cr : Crown) -> f32 {

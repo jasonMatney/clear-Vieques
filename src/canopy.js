@@ -1,7 +1,7 @@
 // ClearVieques — tree canopy bake. CUDEM is bare-earth, so the forest is procedural: a compute pass classifies the real terrain (slope, shore
 // distance, curvature, elevation, sand / rock / grass / scrub) with the same WGSL the terrain shader uses, drops jittered crown centres on a
 // Worley lattice where trees can grow, and writes
-//   cellTex  : one texel per lattice cell — crown height if a tree stands there, 0 if not (temporary)
+//   cellTex  : one texel per lattice cell — crown height if a tree stands there, 0 if not (kept as terrain.cells for the 3D trees)
 //   crownTex : 2 m texels — the crown that is tallest at this texel among the 3x3 neighbouring cells: offset to its centre (x, z), height, id
 //   meanTex  : 4 m texels on the near-DEM grid — stand mean canopy height, tree fraction  (rgba8unorm)
 // Taking the tallest neighbour (rather than the nearest centre) lets a crown's dome spill across its cell boundary where the neighbouring cell
@@ -190,7 +190,8 @@ fn bakeMean(@builtin(global_invocation_id) id : vec3<u32>) {
       p.setPipeline(this.pMean); p.setBindGroup(0, sceneBG(t.crownTex.createView())); p.setBindGroup(1, g1(u2, t.meanTex, d.u8));
       p.dispatchWorkgroups(Math.ceil(n.nx / 8), Math.ceil(n.nz / 8), 1); p.end();
       dev.queue.submit([enc.finish()]);
-      cellTex.destroy();                              // safe: destruction waits for the submitted work
+      // the per-cell crowns stay: the 3D trees near the camera are placed from them (CV.Trees), one per lattice cell that has a tree
+      t.cells = { tex: cellTex, ci, cj, nx: cnx, nz: cnz, lattice };
       t.canopyBaked = true;
     }
   };
