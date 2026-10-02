@@ -54,8 +54,8 @@ fn sandAlbedo(p : vec2<f32>, dist : f32) -> vec3<f32> {
   let n2 = fadeN(vnoise4(p * 0.35), dist, 40.0, 300.0);
   let grain = fadeN(vnoise4(p * 8.5), dist, 8.0, 70.0);
   let speck = fadeN(vnoise4(p * 23.0), dist, 4.0, 30.0);     // shell / coral fragments and dark grains
-  let white = vec3<f32>(0.54, 0.51, 0.455);
-  let pink = vec3<f32>(0.53, 0.40, 0.35);                    // foraminifera-rich sand: the "red" of Red Beach
+  let white = vec3<f32>(0.50, 0.47, 0.42);
+  let pink = vec3<f32>(0.49, 0.37, 0.32);                    // foraminifera-rich sand: the "red" of Red Beach
   let a = mix(white, pink, smoothstep(0.50, 0.88, n1.g) * 0.55 + 0.20 * smoothstep(0.60, 0.90, n2.r));
   var c = a * (0.91 + 0.18 * grain.g);
   c *= 1.0 + 0.24 * smoothstep(0.86, 0.97, speck.r) - 0.20 * smoothstep(0.12, 0.03, speck.g);
@@ -86,12 +86,14 @@ struct LandCls {
 fn landClass(pxz : vec2<f32>, n : vec3<f32>, aux : vec4<f32>, dist : f32) -> LandCls {
   var c : LandCls;
   c.elev = heightAt(pxz) - seaLevel();
-  let slope = 1.0 - n.y;
   let sd = aux.x;
   c.n1 = vnoise4(pxz * 0.018);
   c.n2 = fadeN(vnoise4(pxz * 0.11), dist, 900.0, 3500.0);
   c.n3 = fadeN(vnoise4(pxz * 0.75), dist, 60.0, 420.0);
   c.n4 = fadeN(vnoise4(pxz * 3.1), dist, 25.0, 160.0);
+  // slope with a little noise: the DEM is bilinear on 4 m cells, so a bare slope threshold draws the sand / rock / scrub boundaries as straight
+  // polygon edges along its facets
+  let slope = 1.0 - n.y + 0.07 * (c.n3.g - 0.5) + 0.04 * (c.n4.b - 0.5) + 0.05 * (c.n2.r - 0.5);
   // beach: back-beach limit varies along the shore; the low coastal plain behind it is dry scrub / grass, not sand
   c.sandEdge = 9.0 + 26.0 * c.n1.g + 7.0 * (c.n3.r - 0.5);          // irregular vegetation line
   var sandW = 1.0 - smoothstep(c.sandEdge, c.sandEdge + 1.6, sd);
@@ -165,13 +167,18 @@ fn landMaterial(pxz : vec2<f32>, n : vec3<f32>, V : vec3<f32>, dist : f32, c : L
       leaf = mix(leaf, leaf * vec3<f32>(0.72, 0.95, 1.18), smoothstep(-0.12, -0.50, fol.tone) * 0.6);
       // between crowns: shaded foliage inside a dense stand (dark green), bare litter beyond it
       let floorFol = smoothstep(0.55, 0.90, treeFrac) * (1.0 - smoothstep(1.30, 2.10, rr));
-      detailCol = mix(mix(under * (0.7 + 0.6 * ln.g), leafDark * 0.75 * (0.8 + 0.4 * ln.g), floorFol), leaf, inCrown);
+      // leaf litter lies under the crown and just past its drip line; further out it is the open ground cover (a texel's crown can be one whose
+      // canopy is metres away, and its region ends on straight Voronoi edges, so the litter must follow the crown radius, not the texel)
+      let litter = 1.0 - smoothstep(1.0, 1.6, rr);
+      detailCol = mix(mix(mix(groundCover, under * (0.7 + 0.6 * ln.g), litter), leafDark * 0.75 * (0.8 + 0.4 * ln.g), floorFol), leaf, inCrown);
       // light and shade come from the dome itself: tilted normal, dark low gaps, bright tops. Gaps between crowns are only visible when
       // looking down into the canopy; at grazing angles the crowns in front hide them (this removes the dark rim along ridges).
       let gapVis = smoothstep(0.10, 0.55, clamp(dot(n, V), 0.0, 1.0));
       let underForest = 1.0 - c.sandW;                       // open sand beside a crown is not understorey shade
       let folK = max(inCrown, 0.75 * floorFol) * resolved * underForest;
-      occ = mix(1.0, mix(0.28, 1.0, smoothstep(0.52, 0.92, hfrac)), gapVis * resolved * underForest);
+      // (only under foliage or inside a dense stand: open ground beside a crown is not in its gap shade, and the texels a crown owns end on
+      // straight Voronoi edges that would show as dark polygons)
+      occ = mix(1.0, mix(0.28, 1.0, smoothstep(0.52, 0.92, hfrac)), gapVis * resolved * underForest * max(inCrown, floorFol));
       occ *= mix(1.0, clamp(fol.ao, 0.22, 1.45), folK);
       let g = crownGrad(pxz, cr, treeFrac);
       nAdd = vec3<f32>(-(g.x + fol.g.x * folK), 0.0, -(g.y + fol.g.y * folK)) * 0.85 * resolved * underForest;
@@ -189,7 +196,13 @@ fn landMaterial(pxz : vec2<f32>, n : vec3<f32>, V : vec3<f32>, dist : f32, c : L
   let creep = smoothstep(0.60, 0.80, cn.r + 0.40 * creepBand - 0.22) * creepBand * (0.55 + 0.45 * cf.g) * (1.0 - cover);
   let sandW = c.sandW * (1.0 - 0.97 * cover) * (1.0 - 0.85 * creep);  // a tree standing on the sand line is a tree, not sand
   var alb = mix(veg, rock, c.rockW);
-  alb = mix(alb, sandAlbedo(pxz, dist), sandW);
+  // the beach is not one flat tone: broad patches of slightly darker / pinker sand, and trampled sand between the swash and the vegetation
+  // where footprints leave small shadowed dimples
+  var sandCol = sandAlbedo(pxz, dist) * (0.93 + 0.14 * c.n2.b);
+  let tramp = smoothstep(4.0, 10.0, c.sd) * (1.0 - smoothstep(c.sandEdge - 5.0, c.sandEdge, c.sd)) * smoothstep(0.30, 0.60, c.n1.b);
+  let dn = fadeN(vnoise4(pxz * 2.9 + vec2<f32>(1.3, 4.1)), dist, 6.0, 40.0);
+  sandCol *= 1.0 - 0.18 * tramp * smoothstep(0.56, 0.80, dn.r) + 0.05 * tramp * smoothstep(0.55, 0.80, dn.g);
+  alb = mix(alb, sandCol, sandW);
   alb = mix(alb, vec3<f32>(0.048, 0.080, 0.028) * (0.75 + 0.5 * cf.b), creep * 0.85);
   alb = mix(alb, soil, c.trackW * (1.0 - 0.6 * sandW) * (1.0 - cover));
   var m : LandMat;
@@ -310,7 +323,13 @@ fn shadeLand(p : vec3<f32>, V : vec3<f32>, dist : f32, withShadow : bool, jit : 
   let pxz = p.xz;
   let ground = heightAt(pxz);                                // bare earth: p.y may sit on a crown
   let eps = max(4.0, dist * 0.004);
-  let nG = terrainNormal(pxz, eps);
+  var nG = terrainNormal(pxz, eps);
+  if (dist < 260.0) {
+    // the DEM is bilinear on 4 m cells, so a central difference gives every cell its own flat tilt: up close that reads as faceted planes.
+    // Averaging over half-cell offsets smooths the normal across cell edges (faded out with distance, where the facets are sub-pixel).
+    let nS = normalize(nG + terrainNormal(pxz + vec2<f32>(1.9, 1.1), eps) + terrainNormal(pxz + vec2<f32>(-1.1, 1.9), eps) + terrainNormal(pxz + vec2<f32>(-1.9, -1.1), eps));
+    nG = normalize(mix(nS, nG, smoothstep(160.0, 260.0, dist)));
+  }
   let aux = auxAt(pxz);
   let cls = landClass(pxz, nG, aux, dist);
   let mat = landMaterial(pxz, nG, V, dist, cls);
@@ -321,7 +340,8 @@ fn shadeLand(p : vec3<f32>, V : vec3<f32>, dist : f32, withShadow : bool, jit : 
   n = normalize(n + vec3<f32>(nb.r - 0.5, 0.0, nb.g - 0.5) * bump * (1.0 - 0.6 * mat.rockW) + mat.nAdd);
   // wind ripples on dry sand (~14 cm crest spacing, aligned across the wind)
   let ripPh = dot(pxz, vec2<f32>(0.60, -0.80)) * 46.0 + nb.b * 5.0;
-  let ripK = mat.sandW * (1.0 - smoothstep(30.0, 160.0, dist)) * 0.24;
+  let footS = dist * G.camFwd.w / max(dot(nG, V), 0.06);       // metres of sand per pixel along the view
+  let ripK = mat.sandW * (1.0 - smoothstep(0.022, 0.060, footS)) * 0.24;   // 14 cm ripples: gone before they alias into moire
   n = normalize(n + vec3<f32>(0.60, 0.0, -0.80) * cos(ripPh) * ripK);
   // dune-scale undulation (5-20 m) so large sand faces are not perfectly smooth
   let dn = vnoise4(pxz * 0.09);
