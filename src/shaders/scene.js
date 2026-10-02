@@ -368,11 +368,12 @@ fn shadeLand(p : vec3<f32>, V : vec3<f32>, dist : f32, withShadow : bool, jit : 
   let ground = heightAt(pxz);                                // bare earth: p.y may sit on a crown
   let eps = max(4.0, dist * 0.004);
   var nG = terrainNormal(pxz, eps);
-  if (dist < 260.0) {
+  if (withShadow && dist < 220.0) {
     // the DEM is bilinear on 4 m cells, so a central difference gives every cell its own flat tilt: up close that reads as faceted planes.
-    // Averaging over half-cell offsets smooths the normal across cell edges (faded out with distance, where the facets are sub-pixel).
-    let nS = normalize(nG + terrainNormal(pxz + vec2<f32>(1.9, 1.1), eps) + terrainNormal(pxz + vec2<f32>(-1.1, 1.9), eps) + terrainNormal(pxz + vec2<f32>(-1.9, -1.1), eps));
-    nG = normalize(mix(nS, nG, smoothstep(160.0, 260.0, dist)));
+    // Averaging over half-cell offsets smooths the normal across cell edges (faded out with distance, where the facets are sub-pixel; skipped in
+    // reflections, which the waves blur anyway).
+    let nS = normalize(nG + terrainNormal(pxz + vec2<f32>(2.0, 1.0), eps) + terrainNormal(pxz + vec2<f32>(-1.0, 2.0), eps));
+    nG = normalize(mix(nS, nG, smoothstep(140.0, 220.0, dist)));
   }
   let aux = auxAt(pxz);
   let cls = landClass(pxz, nG, aux, dist);
@@ -425,7 +426,10 @@ fn shadeLand(p : vec3<f32>, V : vec3<f32>, dist : f32, withShadow : bool, jit : 
   if (withShadow && ndl > 0.0) { sh = sunShadow(vec3<f32>(pxz.x, max(p.y, ground), pxz.y) + n * 0.4, jit * 1.2) * structShadow(pxz); }
   if (withShadow && ndl > 0.0) {
     // crowns shade each other and the ground beside them (sand under an overhanging sea grape, litter between trees)
-    let tfm = max(meanCanopy(pxz).y, meanCanopy(pxz + normalize(L.xz + vec2<f32>(1e-4, 0.0)) * 6.0).y);   // here, or trees toward the sun
+    // (on crowns wherever they are resolved; on the ground only within a few hundred metres, beyond which these shadows are sub-pixel)
+    var tfm = 0.0;
+    if (mat.leaf > 0.02) { tfm = meanCanopy(pxz).y; }
+    else if (dist < 320.0) { tfm = max(meanCanopy(pxz).y, meanCanopy(pxz + normalize(L.xz + vec2<f32>(1e-4, 0.0)) * 6.0).y); }   // here, or trees toward the sun
     if (mat.leaf > 0.02 || tfm > 0.01) {
       sh *= mix(1.0, crownShade(pxz, nG, L, tfm, mat.hTop, jit), max(mat.leaf, 1.0 - mat.canopy));
       // sun flecks: light through gaps in the foliage dapples the shade on the ground

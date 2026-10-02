@@ -87,6 +87,7 @@ fn heightNear(p : vec2<f32>) -> f32 {
 }
 fn heightAt(p : vec2<f32>) -> f32 {
   let w = nearWeight(p);
+  if (w >= 1.0) { return heightNear(p); }                     // inside the near window the far grid is fully blended out: skip its fetch
   var h = heightFar(p);
   if (w > 0.0) { h = mix(h, heightNear(p), w); }
   return h;
