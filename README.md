@@ -19,7 +19,7 @@
 
 ## Run it
 
-Needs a WebGPU-capable browser. Developed and verified in Chrome 152 on an Apple M3 (from `http://localhost`, straight from `file://`, and on GitHub Pages); other browsers/GPUs are untested.
+Needs a WebGPU-capable browser. Developed and verified in Chrome 152 on an Apple M3 (from `http://localhost`, straight from `file://`, and on GitHub Pages). The fallback path for GPUs without `float32-filterable` / `timestamp-query` is exercised with `?compat=1` (renders the same), the phone layout at 390x844, and a browser without WebGPU gets a clear message. Safari, Firefox and real phones are still untested.
 
 ```bash
 # any of these
@@ -28,7 +28,7 @@ node tools/serve.mjs                 # http://localhost:8137/
 python3 -m http.server 8137
 ```
 
-URL flags: `?site=caracas|mosquito` · `?mode=day|night` · `?ui=0` (hide the panel) · `?t=12` (freeze the wave clock) · `?scale=0.75` (fix the render scale, disables the adaptive ladder) · `?quality=0|1|2` · `?debug=1..7` (1 normals, 2 depth, 3 caustic map, 4 foam, 5 refraction only, 6 reflection only, 7 land classes) · `?hold=1` (boot, then stop: capture the very first frame) · `?nocrown=1` (terrain without canopy displacement) · `?taa=0` (temporal anti-aliasing off) · `?bloom=0` (no glow around highlights).
+URL flags: `?site=caracas|mosquito` · `?mode=day|night` · `?ui=0` (hide the panel) · `?t=12` (freeze the wave clock) · `?scale=0.75` (fix the render scale, disables the adaptive ladder) · `?quality=0|1|2` · `?debug=1..7` (1 normals, 2 depth, 3 caustic map, 4 foam, 5 refraction only, 6 reflection only, 7 land classes) · `?hold=1` (boot, then stop: capture the very first frame) · `?nocrown=1` (terrain without canopy displacement) · `?taa=0` (temporal anti-aliasing off) · `?bloom=0` (no glow around highlights) · `?compat=1` (run as a GPU without float32 filtering and timestamp queries would: half-float DEM, no GPU timing) · `?ui=1` (show the controls on a phone, where they start hidden).
 
 Reproducible screenshot / smoke test (headless Chrome, no dependencies): `node tools/shot.mjs "file://$PWD/index.html" out.png --w 1920 --h 1080`.
 

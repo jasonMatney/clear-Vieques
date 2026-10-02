@@ -4,11 +4,14 @@
   const CV = window.CV;
 
   CV.initGPU = async function (canvas) {
-    if (!navigator.gpu) throw new Error('WebGPU is not available in this browser. Use a recent Chrome / Edge / Safari Technology Preview.');
+    if (!navigator.gpu) throw new Error('This browser does not support WebGPU. Use a recent Chrome or Edge, or Safari 26 or later (Mac, iPhone, iPad).');
     const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
-    if (!adapter) throw new Error('No WebGPU adapter found.');
+    if (!adapter) throw new Error('This browser supports WebGPU, but no usable graphics adapter was found (hardware acceleration may be turned off, or the GPU is blocklisted).');
+    // ?compat=1 runs as a device without the optional features would (many phones, tablets and integrated GPUs): half-float DEM and
+    // simulation textures, no GPU timing. Lets the fallback path be tested on any machine.
+    const compat = new URLSearchParams(location.search).get('compat') === '1';
     const features = [];
-    for (const f of ['float32-filterable', 'timestamp-query']) if (adapter.features.has(f)) features.push(f);
+    if (!compat) for (const f of ['float32-filterable', 'timestamp-query']) if (adapter.features.has(f)) features.push(f);
     const L = adapter.limits;
     const device = await adapter.requestDevice({
       requiredFeatures: features,

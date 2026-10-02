@@ -67,7 +67,9 @@
     if (params.get('taa') === '0') renderer.taa.enabled = false;     // temporal anti-aliasing off (diagnostics / comparison)
     if (params.has('bloom')) renderer.bloomStrength = parseFloat(params.get('bloom')) || 0;   // bloom mix (0 = off)
     if (params.get('nocrown') === '1') renderer.noCrown = true;      // diagnostics: flat-shaded terrain without the canopy displacement
-    if (params.get('ui') === '0') { document.body.classList.add('hidden'); $('hide').textContent = 'Show controls ↗'; }
+    // on a phone the panel would cover most of the scene: start with the controls tucked away (one tap on "Show controls" brings them back)
+    const narrow = window.matchMedia && window.matchMedia('(max-width: 560px)').matches;
+    if (params.get('ui') === '0' || (narrow && params.get('ui') !== '1')) { document.body.classList.add('hidden'); $('hide').textContent = 'Show controls ↗'; }
     if (params.has('t')) app.fixedTime = parseFloat(params.get('t')) || 0;   // freeze the wave clock (reproducible frames)
 
     const camera = app.camera = new CV.Camera(canvas, terrain, () => app.terrain.seaLevel + app.p.seaOffset);
@@ -303,7 +305,7 @@
         if (++underRun >= 6 && app.rung < LADDER.length - 1 && !(bad[app.rung + 1] && tnow - bad[app.rung + 1] < 25000)) { setRung(app.rung + 1); lastRungChange = tnow; underRun = 0; }
       } else underRun = 0;
     }
-    if (frameN % 15 === 0) {
+    if (frameN % 15 === 0 && hist.length > 0) {                       // (a rung change just cleared the history: keep the last reading)
       const s = [...hist].sort((a, b) => a - b), med = s[s.length >> 1];
       app.stats.fps = 1000 / med; app.stats.ms = med;
       const c = app.camera.pos, m = app.meta;
