@@ -1,19 +1,22 @@
 // ClearVieques — tree canopy bake. CUDEM is bare-earth, so the forest is procedural: a compute pass classifies the real terrain (slope, shore
 // distance, curvature, elevation, sand / rock / grass / scrub) with the same WGSL the terrain shader uses, drops jittered crown centres on a
 // Worley lattice where trees can grow, and writes
-//   crownTex : 2 m texels — nearest crown centre (offset x, z), crown height, random id   (rgba8unorm)
+//   cellTex  : one texel per lattice cell — crown height if a tree stands there, 0 if not (temporary)
+//   crownTex : 2 m texels — the crown that is tallest at this texel among the 3x3 neighbouring cells: offset to its centre (x, z), height, id
 //   meanTex  : 4 m texels on the near-DEM grid — stand mean canopy height, tree fraction  (rgba8unorm)
-// The terrain vertex shader lifts the near mesh by the crown heights (tree-shaped skylines), the fragment shader shades each crown as a lit dome,
-// and sun shadows / reflected rays see the smoothed stand height. Runs once per site (a few ms on the GPU).
+// Taking the tallest neighbour (rather than the nearest centre) lets a crown's dome spill across its cell boundary where the neighbouring cell
+// has no tree, so stands end in rounded edges instead of 2 m-stepped walls. The terrain vertex shader lifts the near mesh by the crown heights
+// (tree-shaped skylines), the fragment shader shades each crown, and sun shadows / reflected rays see the smoothed stand height. Runs once per
+// site (a few ms on the GPU).
 (function () {
   'use strict';
   const CV = window.CV;
 
   const bakeCode = () => CV.wgsl.prelude() + CV.wgsl.materials + /* wgsl */`
-struct BU { a : vec4<f32>, b : vec4<f32> };     // a: grid x0, z0, cell (m), nx ; b: nz, crown lattice (m), max canopy height (m), -
+struct BU { a : vec4<f32>, b : vec4<f32>, c : vec4<f32> };   // a: grid x0, z0, cell (m), nx ; b: nz, crown lattice (m), max canopy height (m), - ; c: first lattice cell i, j, cell count i, j
 @group(1) @binding(0) var<uniform> B : BU;
 @group(1) @binding(1) var outTex : texture_storage_2d<rgba8unorm, write>;
-
+@group(1) @binding(2) var cellTex : texture_2d<f32>;
 // (stand height in metres, tree weight 0..1) at a point of the bare-earth terrain
 fn standAt(p : vec2<f32>) -> vec2<f32> {
   let ground = heightAt(p);
@@ -35,24 +38,42 @@ fn standAt(p : vec2<f32>) -> vec2<f32> {
   return vec2<f32>(h, tree);
 }
 
+// lattice cell g (integer coordinates, in lattice units) -> crown centre (m) and id: the same jitter and hash as crownField
+fn cellCentre(g : vec2<f32>, lat : f32) -> vec2<f32> { return (g + 0.2 + 0.6 * hash22(g)) * lat; }
+fn cellId(g : vec2<f32>) -> f32 { return hash21(g + vec2<f32>(3.7, 1.3)); }
+
+@compute @workgroup_size(8, 8, 1)
+fn bakeCells(@builtin(global_invocation_id) id : vec3<u32>) {
+  if (id.x >= u32(B.c.z) || id.y >= u32(B.c.w)) { return; }
+  let g = B.c.xy + vec2<f32>(id.xy);
+  let cid = cellId(g);
+  let st = standAt(cellCentre(g, B.b.y));
+  let exists = st.y > 0.42 + 0.20 * (fract(cid * 3.3) - 0.5);   // ragged forest edges: whole crowns are in or out
+  let H = select(0.0, st.x * (0.72 + 0.56 * fract(cid * 13.7)), exists);
+  textureStore(outTex, vec2<i32>(id.xy), vec4<f32>(clamp(H / B.b.z, 0.0, 1.0), 0.0, 0.0, 0.0));
+}
+
 @compute @workgroup_size(8, 8, 1)
 fn bakeCrowns(@builtin(global_invocation_id) id : vec3<u32>) {
   if (id.x >= u32(B.a.w) || id.y >= u32(B.b.x)) { return; }
   let pos = B.a.xy + (vec2<f32>(id.xy) + 0.5) * B.a.z;
-  let cell = B.b.y;
-  let cf = crownField(pos, cell);                          // zw: vector to the nearest crown centre, in lattice cells
-  let centre = pos + cf.zw * cell;
-  let st = standAt(centre);
-  let exists = st.y > 0.42 + 0.20 * (fract(cf.y * 3.3) - 0.5);   // ragged forest edges: whole crowns are in or out
-  var H = 0.0;
-  if (exists) {
-    H = st.x * (0.72 + 0.56 * fract(cf.y * 13.7));
-    // a crown standing at the sand line ends where the sand starts: no foliage height over texels that are themselves beach
-    let own = landClass(pos, terrainNormal(pos, 4.0), auxAt(pos), 0.0);
-    H *= 1.0 - smoothstep(0.02, 0.35, own.sandW);
-  }
-  let off = (centre - pos) / CROWN_OFF + 0.5;
-  textureStore(outTex, vec2<i32>(id.xy), vec4<f32>(clamp(off, vec2<f32>(0.0), vec2<f32>(1.0)), clamp(H / B.b.z, 0.0, 1.0), cf.y));
+  let lat = B.b.y;
+  let i = floor(pos / lat);
+  var best = 0.0; var bc = pos; var bH = 0.0; var bid = 0.0;
+  for (var y = -1; y <= 1; y++) { for (var x = -1; x <= 1; x++) {
+    let g = i + vec2<f32>(f32(x), f32(y));
+    let t = vec2<i32>(g - B.c.xy);
+    if (t.x < 0 || t.y < 0 || t.x >= i32(B.c.z) || t.y >= i32(B.c.w)) { continue; }
+    let H = textureLoad(cellTex, t, 0).r * B.b.z;
+    if (H <= 0.0) { continue; }
+    let c = cellCentre(g, lat);
+    if (abs(c.x - pos.x) > 0.49 * CROWN_OFF || abs(c.y - pos.y) > 0.49 * CROWN_OFF) { continue; }   // must fit the stored offset
+    let cid = cellId(g);
+    let sc = H * crownProfile(crownRad(pos, crownShape(c, H, cid)), 1.0);
+    if (sc > best) { best = sc; bc = c; bH = H; bid = cid; }
+  } }
+  let off = (bc - pos) / CROWN_OFF + 0.5;
+  textureStore(outTex, vec2<i32>(id.xy), vec4<f32>(clamp(off, vec2<f32>(0.0), vec2<f32>(1.0)), clamp(bH / B.b.z, 0.0, 1.0), bid));
 }
 
 @compute @workgroup_size(8, 8, 1)
@@ -65,8 +86,9 @@ fn bakeMean(@builtin(global_invocation_id) id : vec3<u32>) {
     for (var i = 0; i < 4; i++) {
       let q = org + (vec2<f32>(f32(i), f32(j)) + 0.5) * (cell * 0.25);
       let cr = crownAt(q);
-      sh += crownH(q, cr, 1.0);
-      cnt += select(0.0, 1.0, cr.H > 0.5);
+      let tl = treeLine(q, terrainNormal(q, 4.0), auxAt(q), 0.0);   // the canopy slopes down to the beach (the shaders apply the same factor)
+      sh += crownH(q, cr, 1.0) * tl;
+      cnt += select(0.0, 1.0, cr.H * tl > 0.5);
     }
   }
   textureStore(outTex, vec2<i32>(id.xy), vec4<f32>(sh / 16.0 / B.b.z, cnt / 16.0, 0.0, 0.0));
@@ -83,9 +105,11 @@ fn bakeMean(@builtin(global_invocation_id) id : vec3<u32>) {
       const gpu = this.gpu, dev = gpu.device, C = GPUShaderStage.COMPUTE;
       this.l1 = dev.createBindGroupLayout({ entries: [
         { binding: 0, visibility: C, buffer: { type: 'uniform' } },
-        { binding: 1, visibility: C, storageTexture: { access: 'write-only', format: 'rgba8unorm' } }] });
+        { binding: 1, visibility: C, storageTexture: { access: 'write-only', format: 'rgba8unorm' } },
+        { binding: 2, visibility: C, texture: { sampleType: 'float' } }] });
       const mod = await CV.shader(gpu, 'canopyBake', bakeCode());
       const lay = dev.createPipelineLayout({ bindGroupLayouts: [this.sceneLayout, this.l1] });
+      this.pCells = dev.createComputePipeline({ label: 'bakeCells', layout: lay, compute: { module: mod, entryPoint: 'bakeCells' } });
       this.pCrowns = dev.createComputePipeline({ label: 'bakeCrowns', layout: lay, compute: { module: mod, entryPoint: 'bakeCrowns' } });
       this.pMean = dev.createComputePipeline({ label: 'bakeMean', layout: lay, compute: { module: mod, entryPoint: 'bakeMean' } });
       // 1x1 stand-ins for every scene binding the bake does not read (a texture may not be sampled and stored in one dispatch)
@@ -111,19 +135,28 @@ fn bakeMean(@builtin(global_invocation_id) id : vec3<u32>) {
         { binding: 3, resource: t.demNear.createView() }, { binding: 4, resource: t.demFar.createView() }, { binding: 5, resource: t.auxTex.createView() },
         { binding: 6, resource: d.f16 }, { binding: 7, resource: d.f16a }, { binding: 8, resource: d.f16a }, { binding: 9, resource: d.f16 }, { binding: 10, resource: d.f16 },
         { binding: 11, resource: res.noise.createView() }, { binding: 12, resource: crownView }, { binding: 13, resource: d.u8 }, { binding: 14, resource: d.u8 }] });
-      const ub = (a, b) => { const buf = CV.buffer(gpu, 32, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, 'bakeU'); gpu.queue.writeBuffer(buf, 0, new Float32Array([...a, ...b])); return buf; };
+      const ub = (a, b, c) => { const buf = CV.buffer(gpu, 48, GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST, 'bakeU'); gpu.queue.writeBuffer(buf, 0, new Float32Array([...a, ...b, ...c])); return buf; };
       const lattice = (t.site && t.site.matSet === 1) ? 7.0 : this.lattice;   // closed mangrove canopy needs a denser crown lattice
-      const u1 = ub([cr.x0, cr.z0, cr.texel, cr.nx], [cr.nz, lattice, cr.maxH, 0]);
-      const u2 = ub([n.x0, n.z0, n.dx, n.nx], [n.nz, 0, cr.maxH, 0]);
-      const g1 = (u, tex) => dev.createBindGroup({ layout: this.l1, entries: [{ binding: 0, resource: { buffer: u } }, { binding: 1, resource: tex.createView() }] });
+      // lattice cells covering the crown window plus a margin of two cells (a texel looks at its cell's 3x3 neighbourhood)
+      const ci = Math.floor(cr.x0 / lattice) - 2, cj = Math.floor(cr.z0 / lattice) - 2;
+      const cnx = Math.ceil((cr.x0 + cr.nx * cr.texel) / lattice) + 2 - ci, cnz = Math.ceil((cr.z0 + cr.nz * cr.texel) / lattice) + 2 - cj;
+      const cellTex = dev.createTexture({ label: 'crownCells', size: [cnx, cnz], format: 'rgba8unorm', usage: GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING });
+      const cells = [ci, cj, cnx, cnz];
+      const u0 = ub([cr.x0, cr.z0, cr.texel, cr.nx], [cr.nz, lattice, cr.maxH, 0], cells);
+      const u2 = ub([n.x0, n.z0, n.dx, n.nx], [n.nz, lattice, cr.maxH, 0], cells);
+      const g1 = (u, tex, readView) => dev.createBindGroup({ layout: this.l1, entries: [{ binding: 0, resource: { buffer: u } }, { binding: 1, resource: tex.createView() }, { binding: 2, resource: readView }] });
       const enc = dev.createCommandEncoder({ label: 'canopyBake' });
-      let p = enc.beginComputePass({ label: 'bakeCrowns' });
-      p.setPipeline(this.pCrowns); p.setBindGroup(0, sceneBG(d.u8)); p.setBindGroup(1, g1(u1, t.crownTex));
+      let p = enc.beginComputePass({ label: 'bakeCells' });
+      p.setPipeline(this.pCells); p.setBindGroup(0, sceneBG(d.u8)); p.setBindGroup(1, g1(u0, cellTex, d.u8));
+      p.dispatchWorkgroups(Math.ceil(cnx / 8), Math.ceil(cnz / 8), 1); p.end();
+      p = enc.beginComputePass({ label: 'bakeCrowns' });
+      p.setPipeline(this.pCrowns); p.setBindGroup(0, sceneBG(d.u8)); p.setBindGroup(1, g1(u0, t.crownTex, cellTex.createView()));
       p.dispatchWorkgroups(Math.ceil(cr.nx / 8), Math.ceil(cr.nz / 8), 1); p.end();
       p = enc.beginComputePass({ label: 'bakeMean' });
-      p.setPipeline(this.pMean); p.setBindGroup(0, sceneBG(t.crownTex.createView())); p.setBindGroup(1, g1(u2, t.meanTex));
+      p.setPipeline(this.pMean); p.setBindGroup(0, sceneBG(t.crownTex.createView())); p.setBindGroup(1, g1(u2, t.meanTex, d.u8));
       p.dispatchWorkgroups(Math.ceil(n.nx / 8), Math.ceil(n.nz / 8), 1); p.end();
       dev.queue.submit([enc.finish()]);
+      cellTex.destroy();                              // safe: destruction waits for the submitted work
       t.canopyBaked = true;
     }
   };

@@ -107,24 +107,24 @@ fn auxAt(p : vec2<f32>) -> vec4<f32> {
 // Each 2 m texel of crownTex holds the nearest crown: offset to its centre (metres, +-CROWN_OFF/2), crown height (/CANOPY_MAX) and a random id.
 // A crown is an analytic dome: radius from the id, h(r) = H * (0.5 * floor(r) + 0.5 * (1 - r^2)^0.75); the floor (foliage between crowns) fades out
 // beyond ~1.9 R so open ground next to a crown stays at ground level.
-const CROWN_OFF : f32 = 16.0;
+const CROWN_OFF : f32 = 32.0;   // a texel may belong to a crown whose centre lies in a neighbouring lattice cell (the tallest one there), up to +-16 m away
 // Crowns are slightly elliptical and each has its own orientation (rot = cos, sin; iR = 1 / radius along the crown's two axes), so the canopy is
-// not a lattice of identical round bumps.
+// not a lattice of identical round bumps. The shape follows from the id alone, so the bake and the shaders agree on it.
 struct Crown { c : vec2<f32>, H : f32, R : f32, id : f32, rot : vec2<f32>, iR : vec2<f32> };
+fn crownShape(c : vec2<f32>, H : f32, id : f32) -> Crown {
+  var cr : Crown; cr.c = c; cr.H = H; cr.id = id;
+  cr.R = 3.0 + 2.4 * fract(id * 7.31 + 0.17);
+  let sq = 0.80 + 0.20 * fract(id * 23.7 + 0.41);                               // squash: 0.8 .. 1.0 along the minor axis
+  cr.rot = normalize(vec2<f32>(fract(id * 37.13 + 0.21), fract(id * 61.71 + 0.57)) * 2.0 - 1.0 + vec2<f32>(0.001, 0.0));   // orientation without trig
+  cr.iR = vec2<f32>(1.0 / (cr.R * (1.08 + 0.10 * fract(id * 5.3))), 1.0 / (cr.R * sq * 0.92));
+  return cr;
+}
 fn crownAt(p : vec2<f32>) -> Crown {
-  var cr : Crown; cr.H = 0.0; cr.R = 3.0; cr.id = 0.0; cr.c = p; cr.rot = vec2<f32>(1.0, 0.0); cr.iR = vec2<f32>(0.333);
   let t = (p - G.crownA.xy) / G.crownA.z;
-  if (t.x < 0.0 || t.y < 0.0 || t.x >= G.crownA.w || t.y >= G.crownB.x) { return cr; }
+  if (t.x < 0.0 || t.y < 0.0 || t.x >= G.crownA.w || t.y >= G.crownB.x) { return crownShape(p, 0.0, 0.0); }
   let ti = vec2<i32>(floor(t));
   let d = textureLoad(crownTex, ti, 0);
-  cr.c = (vec2<f32>(ti) + 0.5) * G.crownA.z + G.crownA.xy + (d.xy - 0.5) * CROWN_OFF;
-  cr.H = d.z * G.crownB.z;
-  cr.id = d.w;
-  cr.R = 3.0 + 2.4 * fract(d.w * 7.31 + 0.17);
-  let sq = 0.80 + 0.20 * fract(d.w * 23.7 + 0.41);                              // squash: 0.8 .. 1.0 along the minor axis
-  cr.rot = normalize(vec2<f32>(fract(d.w * 37.13 + 0.21), fract(d.w * 61.71 + 0.57)) * 2.0 - 1.0 + vec2<f32>(0.001, 0.0));   // orientation without trig
-  cr.iR = vec2<f32>(1.0 / (cr.R * (1.08 + 0.10 * fract(d.w * 5.3))), 1.0 / (cr.R * sq * 0.92));
-  return cr;
+  return crownShape((vec2<f32>(ti) + 0.5) * G.crownA.z + G.crownA.xy + (d.xy - 0.5) * CROWN_OFF, d.z * G.crownB.z, d.w);
 }
 // distance from the crown centre in crown radii (elliptical metric)
 fn crownRad(p : vec2<f32>, cr : Crown) -> f32 {
@@ -420,7 +420,8 @@ fn sunShadow(p : vec3<f32>, jitter : f32) -> f32 {
   var t = 1.5 + jitter; var vis = 1.0;
   for (var i = 0; i < 20; i++) {
     let q = p + L * t;
-    let d = q.y - surfaceAt(q.xz);
+    // crowns within a few metres are shadowed by crownShade (their real domes); the 4 m stand mean would cast polygonal shadows that close
+    let d = q.y - heightAt(q.xz) - meanCanopy(q.xz).x * smoothstep(5.0, 14.0, t);
     vis = min(vis, clamp(d / (0.09 * t + 0.6), 0.0, 1.0));
     if (vis <= 0.001 || q.y > 340.0) { break; }
     t *= 1.34;

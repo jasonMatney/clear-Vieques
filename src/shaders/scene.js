@@ -62,9 +62,25 @@ fn sandAlbedo(p : vec2<f32>, dist : f32) -> vec3<f32> {
   return c;
 }
 
+// ---- tree line: 1 where crowns stand at full height, falling to 0 over ~6 m toward the open beach, so the canopy slopes down to the sand like
+// wind-pruned sea grape instead of ending in a wall. The vertex shader (canopy lift), the fragment shader (crown shading) and the canopy-mean bake
+// all apply the same factor, continuously in position (the crown map itself is 2 m texels).
+fn mangroveW(aux : vec4<f32>, slope : f32, elev : f32) -> f32 {
+  return (1.0 - smoothstep(70.0, 230.0, aux.w)) * (1.0 - smoothstep(1.2, 3.4, elev)) * (1.0 - smoothstep(0.10, 0.30, slope)) * step(0.5, G.misc.w);
+}
+fn treeLineK(sandEdge : f32, sd : f32, slope : f32, elev : f32, mangW : f32) -> f32 {
+  let beach = (1.0 - smoothstep(sandEdge - 1.0, sandEdge + 5.0, sd)) * (1.0 - smoothstep(0.08, 0.24, slope)) * (1.0 - smoothstep(3.2, 5.5, elev));
+  return max(1.0 - beach, mangW);
+}
+fn treeLine(p : vec2<f32>, n : vec3<f32>, aux : vec4<f32>, dist : f32) -> f32 {
+  let n1 = vnoise4(p * 0.018); let n3 = fadeN(vnoise4(p * 0.75), dist, 60.0, 420.0);
+  let elev = heightAt(p) - seaLevel(); let slope = 1.0 - n.y;
+  return treeLineK(9.0 + 26.0 * n1.g + 7.0 * (n3.r - 0.5), aux.x, slope, elev, mangroveW(aux, slope, elev));
+}
+
 // ---- land classification: shared by the canopy bake (compute, dist = 0) and the terrain shading (fragment)
 struct LandCls {
-  sandW : f32, rockW : f32, plain : f32, scrub : f32, trackW : f32, vegW : f32, dryMix : f32, sandEdge : f32, elev : f32, mangW : f32,
+  sandW : f32, rockW : f32, plain : f32, scrub : f32, trackW : f32, vegW : f32, dryMix : f32, sandEdge : f32, elev : f32, mangW : f32, sd : f32, treeLine : f32,
   n1 : vec4<f32>, n2 : vec4<f32>, n3 : vec4<f32>, n4 : vec4<f32>,
 };
 fn landClass(pxz : vec2<f32>, n : vec3<f32>, aux : vec4<f32>, dist : f32) -> LandCls {
@@ -88,7 +104,9 @@ fn landClass(pxz : vec2<f32>, n : vec3<f32>, aux : vec4<f32>, dist : f32) -> Lan
   c.scrub = smoothstep(c.sandEdge - 1.0, c.sandEdge + 3.0, sd) * (1.0 - smoothstep(c.sandEdge + 6.0, c.sandEdge + 40.0, sd));   // sea-grape band behind the sand
   c.trackW = 1.0 - smoothstep(1.1, 2.3, aux.z);
   // mangrove fringe (lagoon sites): low, gentle ground within ~100-200 m of the lagoon's water (aux.w = distance to it)
-  c.mangW = (1.0 - smoothstep(70.0, 230.0, aux.w)) * (1.0 - smoothstep(1.2, 3.4, c.elev)) * (1.0 - smoothstep(0.10, 0.30, slope)) * step(0.5, G.misc.w);
+  c.mangW = mangroveW(aux, slope, c.elev);
+  c.sd = sd;
+  c.treeLine = treeLineK(c.sandEdge, sd, slope, c.elev, c.mangW);
   c.sandW *= 1.0 - c.mangW; c.plain *= 1.0 - c.mangW; c.scrub *= 1.0 - c.mangW;
   c.vegW = (1.0 - c.sandW) * (1.0 - c.rockW) * (1.0 - c.trackW);
   return c;
@@ -106,7 +124,8 @@ fn landMaterial(pxz : vec2<f32>, n : vec3<f32>, V : vec3<f32>, dist : f32, c : L
   let grass = vec3<f32>(0.150, 0.135, 0.070);
   let under = vec3<f32>(0.034, 0.025, 0.016);
 
-  let cr = crownAt(pxz);
+  var cr = crownAt(pxz);
+  cr.H *= c.treeLine;                                                // the canopy slopes down to the beach (same factor as the vertex lift)
   let treeFrac = meanCanopy(pxz).y;
   // metres covered by one pixel on the foliage: individual crowns (~3-5 m radius) are drawn only where they are resolved, otherwise the stand mean.
   // Crowns bulge toward the viewer, so unlike bare ground their footprint does not stretch at grazing angles (the cap on 1/cos is mild).
@@ -164,9 +183,14 @@ fn landMaterial(pxz : vec2<f32>, n : vec3<f32>, V : vec3<f32>, dist : f32, c : L
   }
   let rock = mix(vec3<f32>(0.31, 0.28, 0.23), vec3<f32>(0.19, 0.17, 0.14), c.n3.g) * (0.70 + 0.50 * c.n4.r);
   let soil = vec3<f32>(0.30, 0.22, 0.14) * (0.85 + 0.3 * c.n4.b);
-  let sandW = c.sandW * (1.0 - 0.97 * cover);                        // a tree standing on the sand line is a tree, not sand
+  // beach morning-glory and grass runners creep a few metres onto the sand from the vegetation line, in patches
+  let creepBand = smoothstep(c.sandEdge - 7.0, c.sandEdge - 0.5, c.sd) * c.sandW * (1.0 - c.mangW);
+  let cn = fadeN(vnoise4(pxz * 0.45 + vec2<f32>(3.7, 1.1)), dist, 80.0, 400.0); let cf = fadeN(vnoise4(pxz * 3.2), dist, 15.0, 90.0);
+  let creep = smoothstep(0.60, 0.80, cn.r + 0.40 * creepBand - 0.22) * creepBand * (0.55 + 0.45 * cf.g) * (1.0 - cover);
+  let sandW = c.sandW * (1.0 - 0.97 * cover) * (1.0 - 0.85 * creep);  // a tree standing on the sand line is a tree, not sand
   var alb = mix(veg, rock, c.rockW);
   alb = mix(alb, sandAlbedo(pxz, dist), sandW);
+  alb = mix(alb, vec3<f32>(0.048, 0.080, 0.028) * (0.75 + 0.5 * cf.b), creep * 0.85);
   alb = mix(alb, soil, c.trackW * (1.0 - 0.6 * sandW) * (1.0 - cover));
   var m : LandMat;
   m.albedo = alb; m.sandW = sandW; m.rockW = c.rockW;
@@ -183,7 +207,7 @@ fn crownShade(pxz : vec2<f32>, nG : vec3<f32>, L : vec3<f32>, tf : f32, hSelf : 
   let dir = L.xz / lh;
   let tanE = L.y / lh;                                              // rise of the sun ray per metre walked toward the sun
   let slope = -nG.xz / max(nG.y, 0.2);                              // bare-earth rise per metre (d h / d x, d h / d z)
-  let dmax = clamp(7.0 / max(tanE, 0.05), 4.0, 18.0);
+  let dmax = clamp(7.0 / max(tanE, 0.05), 6.0, 18.0);
   var vis = 1.0;
   for (var k = 0; k < 5; k++) {
     let d = dmax * ((f32(k) + 0.5 + 0.5 * (jit - 0.5)) / 5.0);
@@ -271,6 +295,7 @@ struct TVOut { @builtin(position) pos : vec4<f32>, @location(0) wpos : vec3<f32>
       let q = xz + vec2<f32>(select(-0.9, 0.9, (k & 1) == 1), select(-0.9, 0.9, (k & 2) == 2));
       ch += crownH(q, crownAt(q), tf);
     }
+    if (ch > 0.0) { ch *= treeLine(xz, terrainNormal(xz, 4.0), auxAt(xz), length(G.camPos.xyz - vec3<f32>(xz.x, h, xz.y))); }
     h += 0.25 * ch;
   }
   var o : TVOut;
@@ -334,7 +359,16 @@ fn shadeLand(p : vec3<f32>, V : vec3<f32>, dist : f32, withShadow : bool, jit : 
   let ndl = max((dot(n, L) + wrap) / (1.0 + wrap), 0.0);
   var sh = 1.0;
   if (withShadow && ndl > 0.0) { sh = sunShadow(vec3<f32>(pxz.x, max(p.y, ground), pxz.y) + n * 0.4, jit * 1.2) * structShadow(pxz); }
-  if (withShadow && ndl > 0.0 && mat.leaf > 0.02) { sh *= mix(1.0, crownShade(pxz, nG, L, meanCanopy(pxz).y, mat.hTop, jit), mat.leaf); }
+  if (withShadow && ndl > 0.0) {
+    // crowns shade each other and the ground beside them (sand under an overhanging sea grape, litter between trees)
+    let tfm = max(meanCanopy(pxz).y, meanCanopy(pxz + normalize(L.xz + vec2<f32>(1e-4, 0.0)) * 6.0).y);   // here, or trees toward the sun
+    if (mat.leaf > 0.02 || tfm > 0.01) {
+      sh *= mix(1.0, crownShade(pxz, nG, L, tfm, mat.hTop, jit), max(mat.leaf, 1.0 - mat.canopy));
+      // sun flecks: light through gaps in the foliage dapples the shade on the ground
+      let fl = vnoise4(pxz * 1.6 + vec2<f32>(2.3, 7.1));
+      sh = max(sh, smoothstep(0.64, 0.80, fl.r * 0.7 + fl.g * 0.3) * 0.75 * (1.0 - mat.leaf) * smoothstep(0.02, 0.20, tfm) * (1.0 - smoothstep(60.0, 300.0, dist)));
+    }
+  }
   let ao = clamp(1.0 - 0.055 * max(aux.y, 0.0) + 0.02 * min(aux.y, 0.0), 0.35, 1.05) * (0.75 + 0.25 * clamp(n.y, 0.0, 1.0)) * mat.occ;
   let Eamb = G.skyE.rgb * (0.5 + 0.5 * n.y) * ao + G.sunE.rgb * (L.y * 0.06 * (0.5 - 0.5 * n.y));
   sh *= pow(clamp(mat.occ, 0.1, 1.5), 0.85);                 // leaf-cluster occlusion also shades the direct light (self-shadowing between clusters)
