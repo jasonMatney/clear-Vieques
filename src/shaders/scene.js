@@ -394,7 +394,9 @@ fn shadeLand(p : vec3<f32>, V : vec3<f32>, dist : f32, withShadow : bool, jit : 
 
   // wetness (swash zone): darkened, glossy, slightly redder sand up to the recent run-up level
   let hw = waveDisplacement(pxz, 0.5, 1.2).y;
-  let wetTop = sea + 0.26 + 0.9 * max(hw, 0.0) + 0.5 * abs(hw);
+  var surfRun = 0.0;                                            // the swash of the current set wets the sand a little higher
+  if (G.misc.w < 0.5) { surfRun = surfSets(pxz, nowT()) * 1.3; }
+  let wetTop = sea + 0.26 + 0.9 * max(hw, 0.0) + 0.5 * abs(hw) + surfRun;
   let wet = (1.0 - smoothstep(wetTop - 0.42, wetTop + 0.08, ground)) * mat.sandW;
   var alb = mat.albedo * mix(vec3<f32>(1.0), vec3<f32>(0.58, 0.54, 0.53), wet);
   // wrack line: seaweed, twigs and shell hash left at the highest recent swash
@@ -495,7 +497,7 @@ struct WVOut {
   let d = sea - heightAt(rest);
   let spacing = max(r * (GROWTH - 1.0), 0.05);
   var disp = waveDisplacement(rest, d, spacing);
-  disp.y += rippleAt(rest).x;
+  disp.y += rippleAt(rest).x + surfAt(rest, nowT(), spacing).h;
   var o : WVOut;
   o.rest = rest;
   o.wpos = vec3<f32>(rest.x + disp.x, sea + disp.y + 0.012, rest.y + disp.z);
@@ -554,7 +556,15 @@ fn reflectedLand(q : vec3<f32>, R : vec3<f32>, distTotal : f32) -> vec3<f32> {
   let footAlong = dist * G.camFwd.w / max(V.y, 0.03);          // along-view ground footprint of one pixel (m)
   let ws = waveSlopeAt(in.rest, dRest, footAlong);
   let rp = rippleAt(in.rest);
-  var N = normalize(vec3<f32>(-(ws.x + rp.y), 1.0, -(ws.y + rp.z)));
+  // surf: the bore's slope along the direction inland (gradient of the shore-distance field) and its white water
+  let sf = surfAt(in.rest, nowT(), footAlong);
+  var surfS = vec2<f32>(0.0);
+  if (sf.dh != 0.0) {
+    let gs = vec2<f32>(auxAt(in.rest + vec2<f32>(2.0, 0.0)).x - auxAt(in.rest - vec2<f32>(2.0, 0.0)).x,
+                       auxAt(in.rest + vec2<f32>(0.0, 2.0)).x - auxAt(in.rest - vec2<f32>(0.0, 2.0)).x);
+    surfS = sf.dh * normalize(gs + vec2<f32>(1e-5, 0.0));
+  }
+  var N = normalize(vec3<f32>(-(ws.x + rp.y + surfS.x), 1.0, -(ws.y + rp.z + surfS.y)));
   let ndv0 = dot(N, V);
   if (ndv0 < 0.03) { N = normalize(N + V * (0.03 - ndv0)); }
   let cosv = clamp(dot(N, V), 0.001, 1.0);
@@ -667,7 +677,10 @@ fn reflectedLand(q : vec3<f32>, R : vec3<f32>, distTotal : f32) -> vec3<f32> {
   let brk = smoothstep(0.35, 0.70, hw / dMean) * (1.0 - smoothstep(0.35, 1.0, dMean)) * smoothstep(0.0, 0.04, hw);
   // whitecaps: lacy rather than blobby (noise-modulated), calibrated so coverage follows the observed growth with wind (~1% at 9 m/s, ~4% at 13 m/s)
   let wcap = smoothstep(0.14, 0.72, ws.z * (0.5 + 1.0 * nf2) * 1.3);
-  var foam = clamp(wcap + lace * 0.9 + edgeLine * 0.5 + brk * (0.35 + 0.65 * nf) + rp.w * 0.55, 0.0, 1.0);
+  // white water behind each bore, torn into metre-scale patches and streaks that drift with the flow
+  let nfs = vnoise4(in.rest * vec2<f32>(0.55, 0.35) + vec2<f32>(t * 0.06, -t * 0.04)).r * 0.6 + nf * 0.4;
+  let surfFoam = sf.foam * smoothstep(0.10, 0.45, nfs + 0.35 * sf.foam) * (0.80 + 0.35 * nf2);   // bubbles: a little uneven in brightness
+  var foam = clamp(wcap + lace * 0.9 + edgeLine * 0.5 + brk * (0.35 + 0.65 * nf) + rp.w * 0.55 + surfFoam, 0.0, 1.0);
   foam = foam * foam * (3.0 - 2.0 * foam);
   let Lfoam = vec3<f32>(0.90, 0.92, 0.90) / PI * (G.sunE.rgb * max(dot(N, Ls), 0.0) * 0.9 * cs + G.skyE.rgb * (0.5 + 0.5 * N.y));
 

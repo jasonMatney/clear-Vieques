@@ -397,6 +397,63 @@ fn waveSlopeAt(xz : vec2<f32>, d : f32, footAlong : f32) -> vec4<f32> {
   return vec4<f32>(s2, foam, lost);
 }
 
+// ------------------------------------------------------------------ surf: broken waves (bores) running up the beach
+// A function of the signed distance to the waterline (aux.x, + inland): every ~8.5 s a bore arrives with a steep shoreward face and a long
+// back that drains; its water runs up the sand (the water pass draws water wherever the surface is above the bed, so the swash and backwash
+// come for free) and leaves white water behind it. Fronts are wavy along the shore, and the waves come in sets. None in the lagoon.
+// soft = width (m) over which the face is smoothed (vertex spacing or pixel footprint), so the face never aliases.
+struct Surf { h : f32, dh : f32, foam : f32 };          // elevation (m), d elevation / d shore distance, white water 0..1
+// distance to the nearest cell border of a jittered cell pattern (F2 - F1): foam lace is a network of bubble walls around clear patches
+fn cellEdge(p : vec2<f32>) -> f32 {
+  let i = floor(p); let f = fract(p);
+  var d1 = 9.0; var d2 = 9.0;
+  for (var y = -1; y <= 1; y++) { for (var x = -1; x <= 1; x++) {
+    let g = vec2<f32>(f32(x), f32(y));
+    let o = g + 0.15 + 0.7 * vec2<f32>(hash21(i + g), hash21(i + g + vec2<f32>(19.19, 7.77))) - f;
+    let d = dot(o, o);
+    if (d < d1) { d2 = d1; d1 = d; } else if (d < d2) { d2 = d; }
+  } }
+  return sqrt(d2) - sqrt(d1);
+}
+const SURF_T : f32 = 8.5;
+const SURF_L : f32 = 15.0;
+fn surfShape(u : f32, w : f32) -> f32 { let s = fract(u); return pow(1.0 - s, 1.8) * smoothstep(0.0, w, s); }
+fn surfSets(p : vec2<f32>, t : f32) -> f32 {           // slow modulation of the height: sets of bigger and smaller waves
+  return (0.08 + 0.40 * G.waveA.w) * (0.55 + 0.45 * sin(TAU * t / (SURF_T * 6.5) + vnoise4(p * 0.012 + vec2<f32>(4.1, 7.3)).g * 5.0));
+}
+fn surfAt(p : vec2<f32>, t : f32, soft : f32) -> Surf {
+  var o : Surf; o.h = 0.0; o.dh = 0.0; o.foam = 0.0;
+  if (G.misc.w > 0.5 || nearWeight(p) < 0.5) { return o; }
+  let sd = auxAt(p).x;
+  if (sd < -60.0 || sd > 14.0) { return o; }
+  let n = vnoise4(p * 0.012 + vec2<f32>(4.1, 7.3)); let n2 = vnoise4(p * 0.05 + vec2<f32>(1.7, 2.9));
+  let A = surfSets(p, t) * smoothstep(-55.0, -18.0, sd) * (1.0 - smoothstep(-3.0, 8.0, sd));
+  let x = sd + 9.0 * (n.r - 0.5) + 2.0 * (n2.b - 0.5);                // wavy fronts
+  let u = (t * SURF_L / SURF_T - x) / SURF_L;                          // the crest is where u is a whole number; it moves inland
+  let w = clamp(soft / SURF_L, 0.04, 0.5);
+  let e = 0.01;
+  o.h = A * surfShape(u, w);
+  o.dh = -A * (surfShape(u + e, w) - surfShape(u - e, w)) / (2.0 * e * SURF_L);
+  let s = fract(u);
+  // white water: a dense band a couple of metres wide just behind the face, then lace (a network of foam veins with clear water between them)
+  // that thins out over the bore's back. The lace drifts slowly so it does not read as a fixed pattern under the moving bore.
+  let zone = smoothstep(-48.0, -22.0, sd) * (1.0 - smoothstep(0.0, 8.0, sd)) * smoothstep(0.0, 0.10, A);
+  let dense = exp(-s * 7.0) * smoothstep(0.0, w, s) * (0.75 + 0.5 * n2.g);
+  let dq = p + vec2<f32>(t * 0.15, -t * 0.11);
+  // lace: veins of ridged noise at two scales, with thickness that varies along them and gaps where the foam has torn
+  let r1 = 1.0 - abs(vnoise4(dq * vec2<f32>(0.85, 0.55)).r * 2.0 - 1.0);
+  let r2 = 1.0 - abs(vnoise4(dq * 2.1 + vec2<f32>(3.3, 1.7)).g * 2.0 - 1.0);
+  let vn = vnoise4(dq * 0.6 + vec2<f32>(8.1, 2.2));
+  let th = 0.70 + 0.16 * vn.r;                                         // vein thickness varies
+  var lace = smoothstep(th, 0.97, max(r1, 0.95 * r2)) * smoothstep(0.22, 0.50, vn.g);
+  if (zone > 0.0 && soft < 0.5) {                                      // close up: bubbly texture within the foam
+    lace *= 0.75 + 0.35 * smoothstep(0.0, 0.25, cellEdge(dq * 3.5)) * (1.0 - smoothstep(0.2, 0.5, soft));
+  }
+  lace *= exp(-s * 1.8) * smoothstep(0.0, w, s);
+  o.foam = zone * (dense + 0.8 * lace);
+  return o;
+}
+
 // Interactive ripples: (height, dh/dx, dh/dz, agitation), faded to zero at the window boundary.
 fn rippleAt(xz : vec2<f32>) -> vec4<f32> {
   let size = G.ripple.z;
