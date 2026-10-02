@@ -495,6 +495,7 @@ fn reflectedLand(q : vec3<f32>, R : vec3<f32>, distTotal : f32) -> vec3<f32> {
   // wave and bounce again (mostly up into the sky). Mirroring such rays upward approximates that; the old "squash toward the horizon"
   // pinned them exactly at the beach's angular height and drew beach-coloured bars across the shallows.
   var R = reflect(-V, N);
+  let downRay = R.y < 0.0;                              // aimed into the next wave, not at the shore
   R = normalize(vec3<f32>(R.x, abs(R.y) + 0.003, R.z));
   // how fast the ray elevation changes between neighbouring pixels (uniform control flow: before the discard): an under-resolved wave field
   // makes adjacent pixels pick unrelated facets, so widen the reflection's coverage ramp by the same amount instead of aliasing
@@ -507,11 +508,27 @@ fn reflectedLand(q : vec3<f32>, R : vec3<f32>, distTotal : f32) -> vec3<f32> {
   let K = kAbs();
 
   // ---- reflection: sky, terrain (headlands / forest) and the sun
-  var Lrefl = skyWithClouds(R);
+  // Unresolved ripples (filtered-out slope variance + capillaries finer than the smallest tile) spread each reflection over a lobe a few degrees
+  // wide; near the horizon the sky brightens steeply, so a single direction gives hard pale/dark bars. Average the sky over the lobe's spread
+  // in elevation (clouds stay a single sample: they are already soft).
+  let mssCap = 0.0008 + 0.0006 * G.waveA.z;
+  let sigR = min(2.0 * sqrt(0.5 * (ws.w + mssCap)), 0.35);
+  let cl = clouds(R);
+  let Rlo = normalize(vec3<f32>(R.x, max(R.y - sigR, 0.0), R.z)); let Rhi = normalize(vec3<f32>(R.x, R.y + sigR, R.z));
+  let skyAvg = (skyRadiance(Rlo) + 2.0 * skyRadiance(R) + skyRadiance(Rhi)) * 0.25;
+  var Lrefl = mix(skyAvg, cl.rgb, cl.a);
+  if (G.misc.y > 0.5) { Lrefl = skyWithClouds(R); }               // night: keep the stars' single sample
+  if (downRay) {
+    // a ray reflected downward strikes the back of the next wave: it sees that water (its body colour) plus a second, weaker reflection of
+    // the sky at a typical facet angle. Mirroring it upward instead aimed it at the low beach and striped the shallows with sand-coloured bars.
+    let R2 = normalize(vec3<f32>(R.x, R.y + 0.12, R.z));
+    Lrefl = mix(G.rDeep.rgb * (G.sunE.rgb * G.sunDir.y + G.skyE.rgb) * 1.6, skyRadiance(R2), fresnelAir(0.2) * 2.2);
+  }
   // terrain reflections: rays steeper than ~9 deg can only meet land right beside the shore, so gate the (expensive) march by proximity
   let nearShore = 1.0 - smoothstep(25.0, 110.0, -auxAt(in.rest).x);
-  if (R.y < mix(0.16, 0.6, nearShore)) {
-    let softR = 0.006 + footprintSoft(dist) + 2.0 * sqrt(0.5 * ws.w) + 0.8 * dRy;
+  if (!downRay && R.y < mix(0.16, 0.6, nearShore)) {
+    // the capillary spread (mssCap, slope variance growing with wind after Cox-Munk) also softens where the land's reflection meets the sky's
+    let softR = 0.006 + footprintSoft(dist) + 2.0 * sqrt(0.5 * (ws.w + mssCap)) + 0.8 * dRy;
     let hit = marchLand(P + N * 0.03, R, softR);   // + spread from the slope variance filtered out above
     if (hit.w > 0.0) { Lrefl = mix(Lrefl, reflectedLand(hit.xyz, R, dist + length(hit.xyz - P)), hit.w); }
   }
