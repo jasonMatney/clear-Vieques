@@ -3,10 +3,29 @@
   'use strict';
   const CV = window.CV;
 
+  // Ask for the high-performance GPU, then for whatever the browser prefers, then for the low-power one: a browser may answer one of these with
+  // nothing and the next with a perfectly good adapter. If all fail, wait a moment and go round once more (a GPU process that was just
+  // restarted, e.g. after a crash or a reload during startup, can refuse adapters briefly).
+  async function requestAdapter() {
+    const options = [{ powerPreference: 'high-performance' }, {}, { powerPreference: 'low-power' }];
+    for (let round = 0; round < 2; round++) {
+      for (const o of options) {
+        try { const a = await navigator.gpu.requestAdapter(o); if (a) return a; }
+        catch (e) { console.warn('requestAdapter', JSON.stringify(o), e); }
+      }
+      if (round === 0) await new Promise(r => setTimeout(r, 900));
+    }
+    return null;
+  }
+
   CV.initGPU = async function (canvas) {
     if (!navigator.gpu) throw new Error('This browser does not support WebGPU. Use a recent Chrome or Edge, or Safari 26 or later (Mac, iPhone, iPad).');
-    const adapter = await navigator.gpu.requestAdapter({ powerPreference: 'high-performance' });
-    if (!adapter) throw new Error('This browser supports WebGPU, but no usable graphics adapter was found (hardware acceleration may be turned off, or the GPU is blocklisted).');
+    const adapter = await requestAdapter();
+    if (!adapter) {
+      const ua = navigator.userAgent.replace(/^Mozilla\/5\.0 /, '');
+      throw new Error('This browser supports WebGPU but did not provide a graphics adapter. Quit and reopen the browser and try again; ' +
+        'in Safari, Lockdown Mode also turns WebGPU off. Browser: ' + ua);
+    }
     // ?compat=1 runs as a device without the optional features would (many phones, tablets and integrated GPUs): half-float DEM and
     // simulation textures, no GPU timing. Lets the fallback path be tested on any machine.
     const compat = new URLSearchParams(location.search).get('compat') === '1';
