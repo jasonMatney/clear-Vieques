@@ -171,7 +171,6 @@ fn landClass(pxz : vec2<f32>, n : vec3<f32>, aux : vec4<f32>, dist : f32) -> Lan
   return c;
 }
 
-var<private> gUse3D : f32 = 0.0;       // set by shadeLand: 1 in the terrain pass, where crowns near the camera are 3D trees instead of domes
 var<private> gHole : f32 = 0.0;        // set by shadeLand: 1 where the leafy fringe of a crown lets open sky show through (the terrain pass paints the sky there; no discard, which would defeat tile-based hidden-surface removal)
 struct LandMat { albedo : vec3<f32>, sandW : f32, rockW : f32, canopy : f32, nAdd : vec3<f32>, occ : f32, leaf : f32, hTop : f32, rim : f32 };
 
@@ -182,7 +181,7 @@ fn landMaterial(pxz : vec2<f32>, n : vec3<f32>, V : vec3<f32>, dist : f32, c : L
   let leafDry = vec3<f32>(0.098, 0.083, 0.050);
   let seaGrape = vec3<f32>(0.056, 0.090, 0.030);
   let grass = vec3<f32>(0.150, 0.135, 0.070);
-  let under = vec3<f32>(0.075, 0.062, 0.045);                        // leaf litter: grey-brown dry leaves (seen under the 3D trees)
+  let under = vec3<f32>(0.034, 0.025, 0.016);
 
   var cr = crownAt(pxz);
   cr.H *= c.treeLine;                                                // the canopy slopes down to the beach (same factor as the vertex lift)
@@ -193,8 +192,7 @@ fn landMaterial(pxz : vec2<f32>, n : vec3<f32>, V : vec3<f32>, dist : f32, c : L
   let resolved = 1.0 - smoothstep(1.8, 5.5, foot);
   let hasCrown = cr.H > 0.5;
   let rr = crownRad(pxz, cr);
-  let w3 = gUse3D * select(0.0, tree3DW(cr.c), hasCrown);          // this crown is (partly) a 3D tree: no dome here, only the floor under it
-  let inCrown = select(0.0, 1.0 - smoothstep(0.92, 1.12, rr), hasCrown) * (1.0 - w3);
+  let inCrown = select(0.0, 1.0 - smoothstep(0.92, 1.12, rr), hasCrown);
   let cover = mix(treeFrac, inCrown, resolved);                     // how much of this pixel is foliage
   let canopyMean = mix(leafGreen, leafDry, c.dryMix * 0.55) * 0.80;
   // dry grass and litter between trees and on the plain, with tufts (~10-30 cm) and bare-soil flecks visible at close range
@@ -238,10 +236,10 @@ fn landMaterial(pxz : vec2<f32>, n : vec3<f32>, V : vec3<f32>, dist : f32, c : L
       leaf = mix(leaf, leaf * vec3<f32>(1.30, 1.22, 0.62), smoothstep(0.10, 0.45, fol.tone) * (1.0 - c.mangW) * 0.5);
       leaf = mix(leaf, leaf * vec3<f32>(0.72, 0.95, 1.18), smoothstep(-0.12, -0.50, fol.tone) * 0.6);
       // between crowns: shaded foliage inside a dense stand (dark green), bare litter beyond it
-      let floorFol = smoothstep(0.55, 0.90, treeFrac) * (1.0 - smoothstep(1.30, 2.10, rr)) * (1.0 - w3);
+      let floorFol = smoothstep(0.55, 0.90, treeFrac) * (1.0 - smoothstep(1.30, 2.10, rr));
       // leaf litter lies under the crown and just past its drip line; further out it is the open ground cover (a texel's crown can be one whose
       // canopy is metres away, and its region ends on straight Voronoi edges, so the litter must follow the crown radius, not the texel)
-      let litter = max(1.0 - smoothstep(1.0, 1.6, rr), smoothstep(0.40, 0.75, treeFrac)) * (1.0 - 0.85 * c.sandW);   // inside a closed stand the whole floor is litter (not on the beach)
+      let litter = max(1.0 - smoothstep(1.0, 1.6, rr), smoothstep(0.40, 0.75, treeFrac));   // inside a closed stand the whole floor is litter
       detailCol = mix(mix(mix(groundCover, under * (0.7 + 0.6 * ln.g), litter), leafDark * 0.75 * (0.8 + 0.4 * ln.g), floorFol), leaf, inCrown);
       // light and shade come from the dome itself: tilted normal, dark low gaps, bright tops. Gaps between crowns are only visible when
       // looking down into the canopy; at grazing angles the crowns in front hide them (this removes the dark rim along ridges).
@@ -252,10 +250,10 @@ fn landMaterial(pxz : vec2<f32>, n : vec3<f32>, V : vec3<f32>, dist : f32, c : L
       // straight Voronoi edges that would show as dark polygons)
       occ = mix(1.0, mix(0.28, 1.0, smoothstep(0.52, 0.92, hfrac)), gapVis * resolved * underForest * max(inCrown, floorFol));
       occ *= mix(1.0, clamp(fol.ao, 0.22, 1.45), folK);
-      let g = crownGrad(pxz, cr, treeFrac) * (1.0 - w3);
+      let g = crownGrad(pxz, cr, treeFrac);
       nAdd = vec3<f32>(-(g.x + fol.g.x * folK), 0.0, -(g.y + fol.g.y * folK)) * 0.85 * resolved * underForest;
       leafW = max(inCrown, 0.5 * floorFol) * resolved;
-      hTop = crownH(pxz, cr, treeFrac) * (1.0 - w3);
+      hTop = crownH(pxz, cr, treeFrac);
       rimW = inCrown * resolved * smoothstep(0.50, 0.85, hfrac);     // only the upper dome frays at the edge; the lower flanks stay solid
     }
     veg = mix(meanCol, detailCol, resolved);
@@ -438,8 +436,7 @@ fn nearHeight(xz : vec2<f32>, r : f32, lumps : bool) -> f32 {
     let tf = meanCanopy(xz).y; var ch = 0.0;
     for (var k = 0; k < 4; k++) {
       let q = xz + vec2<f32>(select(-r, r, (k & 1) == 1), select(-r, r, (k & 2) == 2));
-      let cq = crownAt(q);
-      ch += crownH(q, cq, tf) * (1.0 - tree3DW(cq.c));             // crowns drawn as 3D trees do not lift the terrain
+      ch += crownH(q, crownAt(q), tf);
     }
     ch *= 0.25;
     if (ch > 0.0 && lumps) {
@@ -450,7 +447,7 @@ fn nearHeight(xz : vec2<f32>, r : f32, lumps : bool) -> f32 {
       let cs = vec2<f32>(0.9394, 0.3429);
       let qf = vec2<f32>(cs.x * xz.x - cs.y * xz.y, cs.y * xz.x + cs.x * xz.y) / 20.0 + o;
       let top = smoothstep(0.25, 0.75, crownProfile(crownRad(xz, cr), tf));
-      ch += (textureSampleLevel(foliageTex, samRep, qf, 2.2).b - 0.5) * 0.8 * top * min(cr.H * 0.25, 1.0) * (1.0 - tree3DW(cr.c));
+      ch += (textureSampleLevel(foliageTex, samRep, qf, 2.2).b - 0.5) * 0.8 * top * min(cr.H * 0.25, 1.0);
     }
     if (ch > 0.0) { ch *= treeLine(xz, terrainNormal(xz, 4.0), auxAt(xz), length(G.camPos.xyz - vec3<f32>(xz.x, h, xz.y))); }
     h += max(ch, 0.0);
@@ -538,7 +535,6 @@ fn shadeLand(p : vec3<f32>, V : vec3<f32>, dist : f32, withShadow : bool, jit : 
   }
   let aux = auxAt(pxz);
   let cls = landClass(pxz, nG, aux, dist);
-  gUse3D = select(0.0, 1.0, withShadow);
   let mat = landMaterial(pxz, nG, V, dist, cls);
   var n = nG;
   if (cls.shoreRk > 0.03 && dist < 400.0) {                       // boulder shapes tilt the normal
@@ -615,22 +611,21 @@ fn shadeLand(p : vec3<f32>, V : vec3<f32>, dist : f32, withShadow : bool, jit : 
     if (mat.leaf > 0.02) { tfm = meanCanopy(pxz).y; }
     else if (dist < 320.0) { tfm = max(meanCanopy(pxz).y, meanCanopy(pxz + normalize(L.xz + vec2<f32>(1e-4, 0.0)) * 6.0).y); }   // here, or trees toward the sun
     if (mat.leaf > 0.02 || tfm > 0.01) {
-      // (ground under 3D trees: their crowns cast only their own shadow, not the dome model's skirt of foliage between crowns)
-      let cs = crownShade(pxz, nG, L, tfm * (1.0 - gUse3D * tree3DW(pxz) * step(mat.leaf, 0.02)), mat.hTop, jit);
+      let cs = crownShade(pxz, nG, L, tfm, mat.hTop, jit);
       sh *= mix(1.0, cs, max(mat.leaf, 1.0 - mat.canopy));
       canopyOver = (1.0 - cs) * (1.0 - mat.leaf) * smoothstep(0.02, 0.25, tfm);
-      // sun flecks: light through gaps in the foliage dapples the shade on the ground (two rotated octaves: round flecks, not blocky ones)
-      let fl = 0.6 * vnoise4(rot2(pxz, 0.80, 0.60) * 1.3 + vec2<f32>(2.3, 7.1)).r + 0.4 * vnoise4(rot2(pxz, -0.43, 0.90) * 2.9 + vec2<f32>(5.1, 1.9)).g;
-      sh = max(sh, smoothstep(0.62, 0.74, fl) * 0.75 * (1.0 - mat.leaf) * smoothstep(0.02, 0.20, tfm) * (1.0 - smoothstep(60.0, 300.0, dist)));
+      // sun flecks: light through gaps in the foliage dapples the shade on the ground
+      let fl = vnoise4(pxz * 1.6 + vec2<f32>(2.3, 7.1));
+      sh = max(sh, smoothstep(0.64, 0.80, fl.r * 0.7 + fl.g * 0.3) * 0.75 * (1.0 - mat.leaf) * smoothstep(0.02, 0.20, tfm) * (1.0 - smoothstep(60.0, 300.0, dist)));
     }
   }
   let ao = clamp(1.0 - 0.055 * max(aux.y, 0.0) + 0.02 * min(aux.y, 0.0), 0.35, 1.05) * (0.75 + 0.25 * clamp(n.y, 0.0, 1.0)) * mat.occ;
   // ambient: the sky (less of it under a crown), sunlight bounced off the ground a tilted surface faces (albedo ~0.3, view factor (1 - n.y) / 2),
   // and under a crown the warm light from the sunlit ground around it and green light through the leaves. Without the bounce terms shade on
   // pale sand comes out saturated sky-blue.
-  var Eamb = G.skyE.rgb * (0.5 + 0.5 * n.y) * ao * (1.0 - 0.30 * canopyOver);
+  var Eamb = G.skyE.rgb * (0.5 + 0.5 * n.y) * ao * (1.0 - 0.45 * canopyOver);
   Eamb += G.sunE.rgb * max(L.y, 0.0) * vec3<f32>(0.30, 0.27, 0.22) * (0.5 - 0.5 * n.y + 0.03);
-  Eamb += G.sunE.rgb * max(L.y, 0.0) * vec3<f32>(0.16, 0.16, 0.11) * canopyOver;
+  Eamb += G.sunE.rgb * max(L.y, 0.0) * vec3<f32>(0.10, 0.11, 0.07) * canopyOver;
   sh *= pow(clamp(mat.occ, 0.1, 1.5), 0.85);                 // leaf-cluster occlusion also shades the direct light (self-shadowing between clusters)
   var col = alb / PI * (G.sunE.rgb * ndl * sh + Eamb);
   if (mat.leaf > 0.02) {

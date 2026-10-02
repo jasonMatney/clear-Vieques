@@ -44,7 +44,6 @@
       this.timer = new CV.GpuTimer(gpu);
       this.taa = new CV.TAA(gpu);
       this.bloom = new CV.Bloom(gpu);
-      this.trees = new CV.Trees(gpu); this.trees3D = true;           // 3D trees near the camera (?trees=0 to compare with the domes alone)
       this.bloomStrength = 0.5;
       this.ready = this.init();
     }
@@ -82,7 +81,6 @@
         CV.shader(gpu, 'sky', prelude + CV.wgsl.sky), CV.shader(gpu, 'terrain', prelude + CV.wgsl.terrain()),
         CV.shader(gpu, 'water', prelude + CV.wgsl.water(this.mesh)), CV.shader(gpu, 'post', CV.wgsl.post)]);
       this.modules = { mSky, mTerr, mWater, mPost };
-      await this.trees.init(this.sceneLayout);
       await this.structs.ready;
       this.postBGL = dev.createBindGroupLayout({ entries: [
         { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
@@ -143,7 +141,6 @@
         vertex: { module: mTerr, entryPoint: 'vs_terrain_fine' }, fragment: { module: mTerr, entryPoint: 'fs_terrain', targets: [{ format: hdr }] }, multisample: ms,
         primitive: { topology: 'triangle-list', cullMode: 'none' }, depthStencil: { ...depth, depthWriteEnabled: true } });
       this.pStruct = this.structs.pipeline(this.sceneLayout, this.sampleCount);
-      this.trees.buildPipelines(this.sampleCount);
       this.pWater = dev.createRenderPipeline({ label: 'water', layout: lay1, vertex: { module: mWater, entryPoint: 'vs_water' },
         fragment: { module: mWater, entryPoint: 'fs_water', targets: [{ format: hdr, blend: {
           color: { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' },
@@ -211,8 +208,6 @@
       G.set('frame', ...(this.frameInfo || [0, 0, 0, 0]));
       const wa = CV.Waves.travelAngle(this.waves.params.windDirDeg);   // the same direction the wind sea travels
       G.set('windV', Math.cos(wa), Math.sin(wa), this.waves.params.wind, 0);
-      this.treesOn = this.trees3D && !this.noCrown && !!this.terrain.cells;
-      G.set('trees', this.trees.fade[0], this.trees.fade[1], this.treesOn ? 1 : 0, 0);
       const j = CV.jerlov(s.turbidity);
       G.set('kAbs', j.K[0], j.K[1], j.K[2], sea);
       G.set('rDeep', j.R[0] * s.deepGain, j.R[1] * s.deepGain, j.R[2] * s.deepGain, s.turbidity);
@@ -261,7 +256,6 @@
       // caustics need the scene bind group of the fresh wave textures
       this.caustics.sceneBG = this.sceneBG[cur];
       this.caustics.encode(enc);
-      const trees = this.treesOn && this.trees.encode(enc, this.sceneBG[cur], this.terrain, s.cam.pos);
       const ms = this.sampleCount > 1;
       const pass = enc.beginRenderPass({ label: 'scene',
         colorAttachments: [{ view: ms ? this.hdrMSView : this.hdrView, resolveTarget: ms ? this.hdrView : undefined, loadOp: 'clear', clearValue: [0, 0, 0, 1], storeOp: ms ? 'discard' : 'store' }],
@@ -298,7 +292,6 @@
         pass.setPipeline(this.pStruct); pass.setBindGroup(1, this.structs.bg); pass.setVertexBuffer(0, this.structs.vbuf);
         pass.draw(this.structs.vertexCount, this.structs.count);
       }
-      if (!skip.terrain && trees) this.trees.draw(pass);
       if (!skip.water) { pass.setPipeline(this.pWater); pass.setIndexBuffer(this.waterIdx, 'uint32'); pass.drawIndexed(this.waterIdxCount); }
       pass.end();
       const ti = taa ? this.taa.encode(enc, s.cam, jit, 0.12) : -1;
