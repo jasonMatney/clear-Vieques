@@ -69,7 +69,7 @@ struct SOut { @builtin(position) p : vec4<f32>, @location(0) w : vec3<f32>, @loc
   let sh = sunShadow(in.w + n * 0.05, hash21(in.p.xy) * 0.5);
   let up = 0.5 + 0.5 * n.y;
   var col = alb / PI * (G.sunE.rgb * ndl * sh + G.skyE.rgb * up * mix(0.85, 0.45, step(2.5, in.mat)));
-  col = applyFog(col, dist);
+  col = applyFog(col, dist, -V);
   return vec4<f32>(col, 1.0);
 }
 `;

@@ -409,10 +409,14 @@ fn causticAt(p : vec2<f32>, lod : f32, camDist : f32) -> f32 {
 }
 
 // ------------------------------------------------------------------ fog / aerial perspective
-fn applyFog(L : vec3<f32>, dist : f32) -> vec3<f32> {
+// Marine haze over the trade-wind sea (visibility ~25-30 km): extinction a little stronger in blue, so distant land fades toward blue-grey.
+// The scattered light takes the colour of the low sky in the viewing direction (the sky LUT carries the forward-scattering glow), so haze is
+// warmer and brighter toward the sun and bluer away from it. dir = direction from the eye to the point.
+fn applyFog(L : vec3<f32>, dist : f32, dir : vec3<f32>) -> vec3<f32> {
   let ext = G.horizon.w * vec3<f32>(1.0, 1.10, 1.38);
   let T = exp(-ext * dist);
-  return L * T + G.horizon.rgb * (1.0 - T);
+  let lowSky = skyRadiance(normalize(vec3<f32>(dir.x, 0.035, dir.z) + vec3<f32>(1e-4, 0.0, 0.0)));
+  return L * T + mix(G.horizon.rgb, lowSky, 0.6) * (1.0 - T);
 }
 
 // ------------------------------------------------------------------ ray marching against the DEM

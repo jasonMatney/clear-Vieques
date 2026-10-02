@@ -14,7 +14,7 @@
 
   const app = CV.app = {
     p: {}, paused: false, time: 0, siteId: 'caracas', night: false, fixedTime: null,
-    quality: 1, stats: { fps: 0, ms: 0 }, exposureBase: 1.7, airExt: 1.0e-4, deepGain: 1.0, vignette: 0.2,
+    quality: 1, stats: { fps: 0, ms: 0 }, exposureBase: 1.7, airExt: 1.7e-4, deepGain: 1.0, vignette: 0.2,
     paddle: { on: false, x: 0, z: 0, active: 0, last: null },
   };
 

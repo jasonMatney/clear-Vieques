@@ -467,7 +467,7 @@ fn shadeLand(p : vec3<f32>, V : vec3<f32>, dist : f32, withShadow : bool, jit : 
   }
   let jit = hash21(in.pos.xy + G.frame.x * vec2<f32>(7.13, 3.71));   // rotates per frame under TAA, which averages it out
   var col = shadeLand(p, toCam / dist, dist, true, jit);
-  col = applyFog(col, dist);
+  col = applyFog(col, dist, -toCam / dist);
   if (gHole > 0.5) { let d = -toCam / dist; col = skyWithClouds(vec3<f32>(d.x, max(d.y, 0.03), d.z)); }
   return vec4<f32>(col, 1.0);
 }
@@ -536,7 +536,7 @@ fn bioSparks(p : vec2<f32>, t : f32, a : f32) -> f32 {
 // Radiance seen in the reflection of terrain hit at q (cheap: no shadow march).
 fn reflectedLand(q : vec3<f32>, R : vec3<f32>, distTotal : f32) -> vec3<f32> {
   let c = shadeLand(q, -R, distTotal, false, 0.0);
-  return applyFog(c, distTotal);
+  return applyFog(c, distTotal, R);
 }
 
 @fragment fn fs_water(in : WVOut) -> @location(0) vec4<f32> {
@@ -693,7 +693,7 @@ fn reflectedLand(q : vec3<f32>, R : vec3<f32>, distTotal : f32) -> vec3<f32> {
     col += vec3<f32>(0.55, 0.85, 1.0) * ring * (0.55 + 0.45 * smoothstep(0.0, 1.0, G.misc.y)) * mix(0.55, 0.06, G.misc.y);
   }
   col = mix(col, Lfoam, foam * 0.92);
-  col = applyFog(col, dist);
+  col = applyFog(col, dist, -V);
 
   let dbg = G.tint.x;
   if (dbg > 0.5) {
