@@ -591,6 +591,7 @@ fn shadeLand(p : vec3<f32>, V : vec3<f32>, dist : f32, withShadow : bool, jit : 
   let wrap = 0.35 * mat.canopy;                              // leaves transmit: wrapped diffuse on foliage
   let ndl = max((dot(n, L) + wrap) / (1.0 + wrap), 0.0);
   var sh = 1.0;
+  var canopyOver = 0.0;                                      // how much of the sky a crown overhead blocks (ground under trees)
   if (withShadow && ndl > 0.0) { sh = sunShadow(vec3<f32>(pxz.x, max(p.y, ground), pxz.y) + n * 0.4, jit * 1.2) * structShadow(pxz) * cloudShadow(p); }
   if (withShadow && ndl > 0.0) {
     // crowns shade each other and the ground beside them (sand under an overhanging sea grape, litter between trees)
@@ -599,14 +600,21 @@ fn shadeLand(p : vec3<f32>, V : vec3<f32>, dist : f32, withShadow : bool, jit : 
     if (mat.leaf > 0.02) { tfm = meanCanopy(pxz).y; }
     else if (dist < 320.0) { tfm = max(meanCanopy(pxz).y, meanCanopy(pxz + normalize(L.xz + vec2<f32>(1e-4, 0.0)) * 6.0).y); }   // here, or trees toward the sun
     if (mat.leaf > 0.02 || tfm > 0.01) {
-      sh *= mix(1.0, crownShade(pxz, nG, L, tfm, mat.hTop, jit), max(mat.leaf, 1.0 - mat.canopy));
+      let cs = crownShade(pxz, nG, L, tfm, mat.hTop, jit);
+      sh *= mix(1.0, cs, max(mat.leaf, 1.0 - mat.canopy));
+      canopyOver = (1.0 - cs) * (1.0 - mat.leaf) * smoothstep(0.02, 0.25, tfm);
       // sun flecks: light through gaps in the foliage dapples the shade on the ground
       let fl = vnoise4(pxz * 1.6 + vec2<f32>(2.3, 7.1));
       sh = max(sh, smoothstep(0.64, 0.80, fl.r * 0.7 + fl.g * 0.3) * 0.75 * (1.0 - mat.leaf) * smoothstep(0.02, 0.20, tfm) * (1.0 - smoothstep(60.0, 300.0, dist)));
     }
   }
   let ao = clamp(1.0 - 0.055 * max(aux.y, 0.0) + 0.02 * min(aux.y, 0.0), 0.35, 1.05) * (0.75 + 0.25 * clamp(n.y, 0.0, 1.0)) * mat.occ;
-  let Eamb = G.skyE.rgb * (0.5 + 0.5 * n.y) * ao + G.sunE.rgb * (L.y * 0.06 * (0.5 - 0.5 * n.y));
+  // ambient: the sky (less of it under a crown), sunlight bounced off the ground a tilted surface faces (albedo ~0.3, view factor (1 - n.y) / 2),
+  // and under a crown the warm light from the sunlit ground around it and green light through the leaves. Without the bounce terms shade on
+  // pale sand comes out saturated sky-blue.
+  var Eamb = G.skyE.rgb * (0.5 + 0.5 * n.y) * ao * (1.0 - 0.45 * canopyOver);
+  Eamb += G.sunE.rgb * max(L.y, 0.0) * vec3<f32>(0.30, 0.27, 0.22) * (0.5 - 0.5 * n.y + 0.03);
+  Eamb += G.sunE.rgb * max(L.y, 0.0) * vec3<f32>(0.10, 0.11, 0.07) * canopyOver;
   sh *= pow(clamp(mat.occ, 0.1, 1.5), 0.85);                 // leaf-cluster occlusion also shades the direct light (self-shadowing between clusters)
   var col = alb / PI * (G.sunE.rgb * ndl * sh + Eamb);
   if (mat.leaf > 0.02) {
