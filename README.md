@@ -28,7 +28,7 @@ node tools/serve.mjs                 # http://localhost:8137/
 python3 -m http.server 8137
 ```
 
-URL flags: `?site=caracas|mosquito` · `?mode=day|night` · `?ui=0` (hide the panel) · `?t=12` (freeze the wave clock) · `?scale=0.75` (fix the render scale, disables the adaptive ladder) · `?quality=0|1|2` · `?debug=1..7` (1 normals, 2 depth, 3 caustic map, 4 foam, 5 refraction only, 6 reflection only, 7 land classes) · `?hold=1` (boot, then stop: capture the very first frame) · `?nocrown=1` (terrain without canopy displacement).
+URL flags: `?site=caracas|mosquito` · `?mode=day|night` · `?ui=0` (hide the panel) · `?t=12` (freeze the wave clock) · `?scale=0.75` (fix the render scale, disables the adaptive ladder) · `?quality=0|1|2` · `?debug=1..7` (1 normals, 2 depth, 3 caustic map, 4 foam, 5 refraction only, 6 reflection only, 7 land classes) · `?hold=1` (boot, then stop: capture the very first frame) · `?nocrown=1` (terrain without canopy displacement) · `?taa=0` (temporal anti-aliasing off).
 
 Reproducible screenshot / smoke test (headless Chrome, no dependencies): `node tools/shot.mjs "file://$PWD/index.html" out.png --w 1920 --h 1080`.
 
@@ -55,7 +55,7 @@ Panel: location tabs (**Playa Caracas · Mosquito Bay**), **Sun / Moon elevation
 
 ## Performance
 
-The frame is cheap by construction: waves 1.5 ms, ripples skipped while settled, the caustic map splatted straight into its 1024² level on the lower tiers and refreshed every other frame on the lowest, the terrain drawn in 32×32-cell tiles that are culled when off-screen or submerged. Resolution adapts along a ladder of `(tier, scale)` rungs driven by GPU timestamp queries, and an **edge-adaptive upscaler** (after AMD FSR 1's EASU, own compact variant) rebuilds clean edges from the low rungs, so MSAA is only used at the top tier.
+The frame is cheap by construction: waves 1.5 ms, ripples skipped while settled, the caustic map splatted straight into its 1024² level on the lower tiers and refreshed every other frame on the lowest, the terrain drawn in 32×32-cell tiles that are culled when off-screen or submerged. Resolution adapts along a ladder of `(tier, scale)` rungs driven by GPU timestamp queries, and an **edge-adaptive upscaler** (after AMD FSR 1's EASU, own compact variant) rebuilds clean edges from the low rungs, so MSAA is only used at the top tier. **Temporal anti-aliasing** (jittered projection, depth reprojection, variance-clipped history) runs at the internal resolution before grading, which steadies glitter, foliage and skyline edges in motion. Within ~140 m of the camera the forest is drawn on a 1 m mesh instead of 2 m.
 
 ## Iteration log (screenshot critique)
 
@@ -70,6 +70,7 @@ Each round: render, find what is visibly wrong, fix the optics or terrain from t
 | 5 | One flat-caustic frame at page load | Root cause: the caustic window origin was uploaded before it was computed, so the shader always used the previous frame's. Fixed; frame 0 is now pixel-identical to later frames | — |
 | 6 | Night sky read as dusk at full moon; moon disc saturated; vertical seam in the Milky Way | Sky dimmed relative to direct moonlight, earthshine on the dark limb, seam-free star-lane noise | [`16`](docs/critique/16-caracas-night.png) |
 | 7 | Crowns still read as smooth rubbery domes: one flat colour each with hard patch edges, no leaf structure, a smooth stair-stepped skyline; from the water roughly half the forest fell back to the flat stand colour (the pixel footprint was stretched by the ground's grazing angle) | A baked leaf-cluster texture (3 octaves, one fetch each, mip level follows the pixel footprint) gives every crown pixel a slope, occlusion and tint; crowns are elliptical and rotated; neighbouring crowns shade each other along the sun ray; leaves transmit backlight and carry a faint sheen; the upper dome edge frays into open sky where the view ray really escapes (painted as sky, not `discard`, which on a tile-based GPU defeats hidden-surface removal: it cost +6–15 ms); foliage footprint no longer stretches at grazing angles | [`17`](docs/critique/17-forest-before-after.jpg) |
+| 8 | Forest ended in stepped walls at the beach (sand-coloured polygons); beige bars across the shallows; faceted sand with ripple moire; faceted crowns up close; shimmer in motion; flat distant land | Crown bake takes the tallest neighbouring crown and a continuous tree-line factor slopes the canopy onto the sand, with ground shadows and creepers; downward reflections see the next wave and the sky reflection is averaged over the ripple lobe; smoothed near normals, noisy class edges, footprint-filtered ripples, varied sand; 1 m mesh near the camera with leaf-cluster relief; TAA; directional marine haze. (A 2.5-D cumulus layer was tried and set aside: the original clouds were preferred.) | [`18`](docs/critique/18-scene-round-before-after.jpg) |
 
 More: [OSM shelter](docs/critique/14-osm-shelter.png) · [mangroves by day and night](docs/critique/15-mangrove-day-night.png) · earlier stills `docs/caustics.jpg`, `docs/low-sun.jpg`, `docs/sun-glitter.jpg`, `docs/horizon.jpg`.
 
@@ -84,7 +85,7 @@ More: [OSM shelter](docs/critique/14-osm-shelter.png) · [mangroves by day and n
 
 ```
 index.html            page + CSS (dark glass panel)
-src/                  util · gpu · sky (CPU atmosphere) · night (moon model) · terrain · waves · ripples · caustics · canopy (forest bake) · foliage (leaf-cluster texture)
+src/                  util · gpu · sky (CPU atmosphere) · night (moon model) · terrain · waves · ripples · caustics · canopy (forest bake) · foliage (leaf-cluster texture) · taa
                       structures (OSM shelters) · render · camera · sites · ui · main
 src/shaders/          common (shared WGSL: DEM, canopy, sky, stars/moon, waves, ray marchers) · waves (spectrum/FFT) · scene (sky/terrain/water/post)
 data/terrain.js       packed DEM grids + OSM for both sites (generated)
