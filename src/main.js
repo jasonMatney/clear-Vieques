@@ -9,7 +9,10 @@
   const fatal = (err) => {
     console.error(err);
     $('loader').style.display = 'none';
-    $('fatal').style.display = 'flex'; $('fatalMsg').textContent = (err && err.message) || String(err);
+    const msg = (err && err.message) || String(err);
+    // only a missing WebGPU gets the "WebGPU is required" heading; anything else is a load or runtime failure, which a reload often fixes
+    if (!/WebGPU|adapter/i.test(msg)) $('fatalTitle').textContent = 'The demo could not start';
+    $('fatal').style.display = 'flex'; $('fatalMsg').textContent = /WebGPU|adapter/i.test(msg) ? msg : msg + ' — try reloading the page.';
   };
 
   const app = CV.app = {
