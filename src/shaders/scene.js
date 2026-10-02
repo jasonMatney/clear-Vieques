@@ -236,18 +236,30 @@ fn crownShade(pxz : vec2<f32>, nG : vec3<f32>, L : vec3<f32>, tf : f32, hSelf : 
   return vis;
 }
 
-// Seagrass beds: domain-warped noise at rotated octaves (one octave of value noise thresholded draws square-ish patches on its lattice), so beds
-// have irregular edges, sandy blowouts inside and a sparse fringe of tufts. Returns (bed density 0..1, fringe tufts 0..1).
+// Seagrass beds: domain-warped noise at rotated octaves (one octave of value noise thresholded draws square-ish patches on its lattice). The
+// field is turned into a shoot density with a wide transition: beds thin out over several metres at their edges instead of ending in an outline.
 fn rot2(p : vec2<f32>, c : f32, s : f32) -> vec2<f32> { return vec2<f32>(c * p.x - s * p.y, s * p.x + c * p.y); }
-fn seagrassBed(p : vec2<f32>, dist : f32) -> vec2<f32> {
+fn seagrassDensity(p : vec2<f32>, dist : f32) -> f32 {
   let w = vec2<f32>(vnoise4(p * 0.0085 + vec2<f32>(3.1, 7.7)).r, vnoise4(p * 0.0085 + vec2<f32>(9.4, 1.2)).g) - 0.5;
   let q = p + w * 70.0;
   var m = 0.52 * vnoise4(rot2(q, 0.83, 0.56) * 0.021).r + 0.26 * vnoise4(rot2(q, 0.29, -0.96) * 0.052 + 5.3).g;
   m += 0.14 * fadeN(vnoise4(rot2(q, -0.71, 0.70) * 0.13 + 2.2), dist, 300.0, 1200.0).b;
   m += 0.08 * fadeN(vnoise4(rot2(q, 0.97, 0.26) * 0.37 + 8.8), dist, 120.0, 500.0).a;
-  let bed = smoothstep(0.505, 0.555, m);
-  let fringe = (1.0 - bed) * smoothstep(0.45, 0.505, m) * smoothstep(0.62, 0.80, fadeN(vnoise4(p * 1.7), dist, 20.0, 90.0).r);
-  return vec2<f32>(bed * smoothstep(0.50, 0.60, m * 0.7 + 0.3 * bed), fringe);
+  return smoothstep(0.47, 0.60, m);
+}
+// A meadow is made of clumps of shoots (~30 cm apart) with sand between them. Where the density is low only some clumps exist, so a bed's edge
+// is a scatter of thinning clumps. Returns (cover 0..1, clump id). Up close individual clumps are drawn; once a pixel covers several, their mean.
+fn seagrassCover(p : vec2<f32>, dens : f32, dist : f32) -> vec2<f32> {
+  let mean = dens * (0.55 + 0.38 * dens);
+  let foot = dist * G.camFwd.w * 2.0;
+  let res = 1.0 - smoothstep(0.06, 0.22, foot);
+  if (res <= 0.0 || dens <= 0.0) { return vec2<f32>(mean, 0.5); }
+  let cf = crownField(p + vec2<f32>(5.3, 1.9), 0.30);
+  let exists = step(cf.y, dens * 1.08);
+  let rad = 0.42 + 0.30 * fract(cf.y * 17.3) + 0.15 * dens;                  // clumps grow into each other in the dense interior
+  let inC = exists * (1.0 - smoothstep(rad - 0.12, rad + 0.04, cf.x + 0.18 * (vnoise4(p * 9.0).r - 0.5)));
+  // a clump at a bed's thin edge has few shoots: sand shows through it
+  return vec2<f32>(mix(mean, inC * (0.45 + 0.55 * smoothstep(0.0, 0.6, dens)), res), cf.y);
 }
 // Blades up close: streaks a centimetre or two wide and ~25 cm long that lean and sway with the swell's surge (period ~8 s, moving shoreward),
 // brightening as they tilt toward the light. Returns a brightness factor (1 = the bed's mean).
@@ -261,42 +273,18 @@ fn seagrassBlades(p : vec2<f32>, dist : f32) -> f32 {
   let st = vnoise4(bq * vec2<f32>(48.0, 5.5)).r * 0.65 + vnoise4(bq * vec2<f32>(90.0, 9.0) + 3.7).g * 0.35;
   return mix(1.0, (0.55 + 0.9 * st) * (1.0 + 0.10 * cos(ph)), k);
 }
-// Coral heads and rocks scattered on sand and rubble (~1-2 per 100 m2 where they occur): a mottled dome, lit on top, with a scoured, slightly
-// darker ring around it. Returns (albedo, weight).
-fn coralHeads(p : vec2<f32>, depth : f32, dist : f32) -> vec4<f32> {
-  if (depth < 1.0 || depth > 12.0 || dist > 260.0) { return vec4<f32>(0.0); }
-  var col = vec3<f32>(0.0); var wgt = 0.0;
-  for (var k = 0; k < 2; k++) {
-    let size = select(7.0, 2.6, k == 1);
-    let cf = crownField(p + f32(k) * vec2<f32>(31.7, 12.9), size);
-    if (cf.y > select(0.10, 0.06, k == 1)) { continue; }
-    let rad = select(0.5 + 1.1 * fract(cf.y * 71.3), 0.18 + 0.30 * fract(cf.y * 53.9), k == 1);
-    let r = cf.x * size / rad;
-    if (r > 1.5) { continue; }
-    let mott = vnoise4(p * 6.0 + cf.y * 40.0);
-    let hue = fract(cf.y * 37.1);
-    var c = mix(vec3<f32>(0.26, 0.20, 0.14), vec3<f32>(0.30, 0.22, 0.26), smoothstep(0.4, 0.8, hue));   // brown boulder coral / purplish rock
-    c = mix(c, vec3<f32>(0.36, 0.33, 0.18), smoothstep(0.85, 0.97, hue));                                // a few yellowish heads
-    c *= (0.55 + 0.6 * mott.r) * (0.70 + 0.40 * sqrt(max(1.0 - r * r, 0.0)));                            // mottled, lit on top
-    let inside = 1.0 - smoothstep(0.90, 1.0, r);
-    let ring = smoothstep(0.95, 1.05, r) * (1.0 - smoothstep(1.10, 1.50, r));                             // scoured moat: darker sand
-    if (inside > wgt) { col = c; wgt = inside; }
-    if (ring > 0.0 && wgt < 0.5) { col = vec3<f32>(-0.18); wgt = max(wgt, ring * 0.8); }                // negative: darken what is there
-  }
-  return vec4<f32>(col, wgt * (1.0 - smoothstep(180.0, 260.0, dist)));
-}
-
 fn seabedAlbedo(q : vec3<f32>, nb : vec3<f32>, depth : f32, dist : f32) -> vec3<f32> {
   let p = q.xz;
   let n1 = vnoise4(p * 0.030);
   let n2 = fadeN(vnoise4(p * 0.19), dist, 200.0, 900.0);
   let n3 = fadeN(vnoise4(p * 1.30), dist, 25.0, 160.0);
   let n4 = fadeN(vnoise4(p * 5.20), dist, 10.0, 70.0);
-  let sg = seagrassBed(p, dist);
+  let dens = seagrassDensity(p, dist);
   if (G.misc.w > 0.5) {                                        // lagoon floor: dark mud with seagrass, not bright sand
     let mud = vec3<f32>(0.120, 0.098, 0.072) * (0.90 + 0.20 * n3.g);
-    let grassL = vec3<f32>(0.030, 0.052, 0.024) * (0.75 + 0.5 * n3.r) * seagrassBlades(p, dist);
-    return mix(mud, grassL, max(sg.x, 0.6 * sg.y) * smoothstep(0.25, 1.1, depth));
+    let cvL = seagrassCover(p, dens * smoothstep(0.25, 1.1, depth), dist);
+    let grassL = vec3<f32>(0.034, 0.056, 0.026) * (0.75 + 0.5 * n3.r) * seagrassBlades(p, dist);
+    return mix(mud * mix(1.0, 0.7, dens), grassL, cvL.x);
   }
   let sandW = vec3<f32>(0.68, 0.62, 0.52);
   let sandP = vec3<f32>(0.62, 0.49, 0.40);
@@ -305,23 +293,22 @@ fn seabedAlbedo(q : vec3<f32>, nb : vec3<f32>, depth : f32, dist : f32) -> vec3<
   // wave-formed ripple marks (aligned with the swell), ~14 cm crest spacing
   let rip = sin(dot(p, vec2<f32>(0.62, -0.78)) * 44.0 + n2.r * 7.0);
   sand *= 1.0 + 0.07 * rip * smoothstep(0.2, 1.2, depth) * (1.0 - smoothstep(30.0, 120.0, dist));
-  // seagrass beds (turtle grass grows from ~1.4 m down to ~15 m here), denser and darker in their interior
-  let gm = max(sg.x, 0.55 * sg.y) * smoothstep(1.4, 2.6, depth) * (1.0 - smoothstep(9.0, 15.0, depth));
-  // a bed is not one flat tone: thinner patches show sand between the blades, and some areas are browner (older blades with epiphytes)
+  // seagrass (turtle grass, ~1.4 m down to ~15 m here): olive clumps, some greener, some browner with epiphytes, a few pale dead-blade tufts;
+  // the sand between clumps lies in the blades' shade
+  let dg = dens * smoothstep(1.4, 2.6, depth) * (1.0 - smoothstep(9.0, 15.0, depth));
+  let cv = seagrassCover(p, dg, dist);
   let bv = vnoise4(rot2(p, 0.6, 0.8) * 0.075 + 4.4);
-  var grass = mix(vec3<f32>(0.030, 0.052, 0.024), vec3<f32>(0.060, 0.058, 0.030), smoothstep(0.55, 0.85, bv.g) * 0.8);
-  grass *= (0.55 + 0.9 * n3.r) * mix(1.25, 0.85, sg.x) * seagrassBlades(p, dist);
-  grass = mix(grass, sand * 0.75, smoothstep(0.60, 0.92, bv.r) * 0.45);
+  var grass = mix(vec3<f32>(0.044, 0.068, 0.030), vec3<f32>(0.070, 0.064, 0.034), smoothstep(0.50, 0.85, bv.g) * 0.8);
+  grass *= 0.80 + 0.45 * fract(cv.y * 23.7);                                  // clump to clump
+  grass = mix(grass, vec3<f32>(0.16, 0.14, 0.09), step(0.94, fract(cv.y * 7.9)) * 0.6);
+  grass *= (0.70 + 0.6 * n3.r) * seagrassBlades(p, dist);
+  sand *= mix(1.0, 0.55, smoothstep(0.2, 0.9, dg));
   // hard-ground / rubble on slopes and near rocky shores
   let steep = 1.0 - nb.y;
   let rockW = smoothstep(0.10, 0.26, steep) * (0.6 + 0.4 * n2.b);
   let rock = vec3<f32>(0.13, 0.115, 0.09) * (0.6 + 0.8 * n3.g);
-  var a = mix(sand, grass, gm);
+  var a = mix(sand, grass, cv.x);
   a = mix(a, rock, rockW);
-  // coral heads and rocks: on sand and rubble, rarely inside dense seagrass
-  let ch = coralHeads(p, depth, dist);
-  let chW = ch.w * (1.0 - 0.8 * sg.x);
-  if (ch.x < 0.0) { a *= 1.0 + ch.x * chW; } else { a = mix(a, ch.rgb, chW); }
   return a;
 }
 `;
