@@ -2,7 +2,7 @@
 
 *A spectral water study on Vieques* — a real-time **WebGPU** shallow-water demo over **real NOAA topo-bathy** of Vieques, Puerto Rico. Two linked modes on one renderer: **Playa Caracas by day** and **Mosquito Bay by night**, where the water glows blue-green wherever it is disturbed.
 
-**[Live demo → jasonmatney.github.io/clear-Vieques](https://jasonmatney.github.io/clear-Vieques/)** (needs a WebGPU-capable browser; the first load reads a ~6 MB terrain file). Deep links: [`?site=mosquito&mode=night`](https://jasonmatney.github.io/clear-Vieques/?site=mosquito&mode=night) · [`?site=caracas&mode=day`](https://jasonmatney.github.io/clear-Vieques/?site=caracas&mode=day)
+**[Live demo → webgpu-demos.github.io/clear-Vieques](https://webgpu-demos.github.io/clear-Vieques/)** (needs a WebGPU-capable browser; the first load reads a ~6 MB terrain file). Deep links: [`?site=mosquito&mode=night`](https://webgpu-demos.github.io/clear-Vieques/?site=mosquito&mode=night) · [`?site=caracas&mode=day`](https://webgpu-demos.github.io/clear-Vieques/?site=caracas&mode=day)
 
 ![Playa Caracas by day](docs/hero.jpg)
 
