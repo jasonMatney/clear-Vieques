@@ -11,7 +11,7 @@
 ## What it does
 
 * **Water optics, all on the GPU:** three tiled FFT cascades (JONSWAP wind sea + swell, finite-depth and capillary dispersion, crest-sharpening, Jacobian whitecaps), exact Fresnel with Smith shadowing of the reflected ray, per-channel Beer–Lambert absorption (Jerlov I → 9C), a refracted **real seabed**, caustics splatted onto that seabed, foam, and interactive ripples.
-* **Playa Caracas (day):** white-to-pink sand, jade-to-blue water, forested headland; shallow terrace, crescent, islet and sand spit straight from the DEM. Three OSM picnic shelters are drawn at their real footprints.
+* **Playa Caracas (day):** white-to-pink sand, jade-to-blue water, forested headland, small surf running up the beach, cloud shadows drifting across the bay; shallow terrace, crescent, islet and sand spit straight from the DEM. Three OSM picnic shelters are drawn at their real footprints.
 * **Mosquito Bay (night):** the enclosed lagoon and its narrow inlet from the DEM, a mangrove fringe grown along the lagoon's real shoreline, a physical moon (Allen's phase law, true phase shape on the disc), procedural stars and Milky Way, dark-adapted grading — and **Pyrodinium-style bioluminescence**: blue-green light and sparks where the surface is disturbed by your paddle, by camera motion (the camera is a boat with a bow wave), by ripples you click, and by breaking waves.
 * **The moon-phase slider changes how visible the glow is**, physically: a thin moon lets the eye (and the exposure) adapt, so the same stroke pops at new moon and recedes at full moon.
 
@@ -28,7 +28,7 @@ node tools/serve.mjs                 # http://localhost:8137/
 python3 -m http.server 8137
 ```
 
-URL flags: `?site=caracas|mosquito` · `?mode=day|night` · `?ui=0` (hide the panel) · `?t=12` (freeze the wave clock) · `?scale=0.75` (fix the render scale, disables the adaptive ladder) · `?quality=0|1|2` · `?debug=1..7` (1 normals, 2 depth, 3 caustic map, 4 foam, 5 refraction only, 6 reflection only, 7 land classes) · `?hold=1` (boot, then stop: capture the very first frame) · `?nocrown=1` (terrain without canopy displacement) · `?taa=0` (temporal anti-aliasing off).
+URL flags: `?site=caracas|mosquito` · `?mode=day|night` · `?ui=0` (hide the panel) · `?t=12` (freeze the wave clock) · `?scale=0.75` (fix the render scale, disables the adaptive ladder) · `?quality=0|1|2` · `?debug=1..7` (1 normals, 2 depth, 3 caustic map, 4 foam, 5 refraction only, 6 reflection only, 7 land classes) · `?hold=1` (boot, then stop: capture the very first frame) · `?nocrown=1` (terrain without canopy displacement) · `?taa=0` (temporal anti-aliasing off) · `?bloom=0` (no glow around highlights).
 
 Reproducible screenshot / smoke test (headless Chrome, no dependencies): `node tools/shot.mjs "file://$PWD/index.html" out.png --w 1920 --h 1080`.
 
@@ -71,6 +71,7 @@ Each round: render, find what is visibly wrong, fix the optics or terrain from t
 | 6 | Night sky read as dusk at full moon; moon disc saturated; vertical seam in the Milky Way | Sky dimmed relative to direct moonlight, earthshine on the dark limb, seam-free star-lane noise | [`16`](docs/critique/16-caracas-night.png) |
 | 7 | Crowns still read as smooth rubbery domes: one flat colour each with hard patch edges, no leaf structure, a smooth stair-stepped skyline; from the water roughly half the forest fell back to the flat stand colour (the pixel footprint was stretched by the ground's grazing angle) | A baked leaf-cluster texture (3 octaves, one fetch each, mip level follows the pixel footprint) gives every crown pixel a slope, occlusion and tint; crowns are elliptical and rotated; neighbouring crowns shade each other along the sun ray; leaves transmit backlight and carry a faint sheen; the upper dome edge frays into open sky where the view ray really escapes (painted as sky, not `discard`, which on a tile-based GPU defeats hidden-surface removal: it cost +6–15 ms); foliage footprint no longer stretches at grazing angles | [`17`](docs/critique/17-forest-before-after.jpg) |
 | 8 | Forest ended in stepped walls at the beach (sand-coloured polygons); beige bars across the shallows; faceted sand with ripple moire; faceted crowns up close; shimmer in motion; flat distant land | Crown bake takes the tallest neighbouring crown and a continuous tree-line factor slopes the canopy onto the sand, with ground shadows and creepers; downward reflections see the next wave and the sky reflection is averaged over the ripple lobe; smoothed near normals, noisy class edges, footprint-filtered ripples, varied sand; 1 m mesh near the camera with leaf-cluster relief; TAA; directional marine haze. (A 2.5-D cumulus layer was tried and set aside: the original clouds were preferred.) | [`18`](docs/critique/18-scene-round-before-after.jpg) |
+| 9 | The waterline was a static white line; glints were hard clipped pixels; clouds cast no shade | Surf: bores every 8.5 s in sets, run-up and backwash on the sand, white water (dense band behind the face, torn lace of varying thickness), none in the lagoon; bloom from light above the tone mapper's shoulder, read before TAA, gentler at night so the crescent survives; cloud shadows on land, water and seabed that drift with the clouds | [`19`](docs/critique/19-surf-bloom-cloud-shadows.jpg) |
 
 More: [OSM shelter](docs/critique/14-osm-shelter.png) · [mangroves by day and night](docs/critique/15-mangrove-day-night.png) · earlier stills `docs/caustics.jpg`, `docs/low-sun.jpg`, `docs/sun-glitter.jpg`, `docs/horizon.jpg`.
 
@@ -85,7 +86,7 @@ More: [OSM shelter](docs/critique/14-osm-shelter.png) · [mangroves by day and n
 
 ```
 index.html            page + CSS (dark glass panel)
-src/                  util · gpu · sky (CPU atmosphere) · night (moon model) · terrain · waves · ripples · caustics · canopy (forest bake) · foliage (leaf-cluster texture) · taa
+src/                  util · gpu · sky (CPU atmosphere) · night (moon model) · terrain · waves · ripples · caustics · canopy (forest bake) · foliage (leaf-cluster texture) · taa · bloom
                       structures (OSM shelters) · render · camera · sites · ui · main
 src/shaders/          common (shared WGSL: DEM, canopy, sky, stars/moon, waves, ray marchers) · waves (spectrum/FFT) · scene (sky/terrain/water/post)
 data/terrain.js       packed DEM grids + OSM for both sites (generated)
