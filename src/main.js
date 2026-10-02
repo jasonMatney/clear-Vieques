@@ -65,6 +65,7 @@
     else setRung((window.devicePixelRatio || 1) > 1.5 ? 2 : 4);
     if (params.has('debug')) renderer.debugView = parseInt(params.get('debug')) || 0;
     if (params.get('taa') === '0') renderer.taa.enabled = false;     // temporal anti-aliasing off (diagnostics / comparison)
+    if (params.has('bloom')) renderer.bloomStrength = parseFloat(params.get('bloom')) || 0;   // bloom mix (0 = off)
     if (params.get('nocrown') === '1') renderer.noCrown = true;      // diagnostics: flat-shaded terrain without the canopy displacement
     if (params.get('ui') === '0') { document.body.classList.add('hidden'); $('hide').textContent = 'Show controls ↗'; }
     if (params.has('t')) app.fixedTime = parseFloat(params.get('t')) || 0;   // freeze the wave clock (reproducible frames)

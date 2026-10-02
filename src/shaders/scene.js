@@ -423,7 +423,7 @@ fn shadeLand(p : vec3<f32>, V : vec3<f32>, dist : f32, withShadow : bool, jit : 
   let wrap = 0.35 * mat.canopy;                              // leaves transmit: wrapped diffuse on foliage
   let ndl = max((dot(n, L) + wrap) / (1.0 + wrap), 0.0);
   var sh = 1.0;
-  if (withShadow && ndl > 0.0) { sh = sunShadow(vec3<f32>(pxz.x, max(p.y, ground), pxz.y) + n * 0.4, jit * 1.2) * structShadow(pxz); }
+  if (withShadow && ndl > 0.0) { sh = sunShadow(vec3<f32>(pxz.x, max(p.y, ground), pxz.y) + n * 0.4, jit * 1.2) * structShadow(pxz) * cloudShadow(p); }
   if (withShadow && ndl > 0.0) {
     // crowns shade each other and the ground beside them (sand under an overhanging sea grape, litter between trees)
     // (on crowns wherever they are resolved; on the ground only within a few hundred metres, beyond which these shadows are sub-pixel)
@@ -574,6 +574,7 @@ fn reflectedLand(q : vec3<f32>, R : vec3<f32>, distTotal : f32) -> vec3<f32> {
 
   let jit = hash21(in.pos.xy + G.frame.x * vec2<f32>(7.13, 3.71));   // rotates per frame under TAA, which averages it out
   let K = kAbs();
+  let cs = cloudShadow(P);                              // cloud shade on the surface (and, close enough, on the bed below it)
 
   // ---- reflection: sky, terrain (headlands / forest) and the sun
   // Unresolved ripples (filtered-out slope variance + capillaries finer than the smallest tile) spread each reflection over a lobe a few degrees
@@ -610,13 +611,13 @@ fn reflectedLand(q : vec3<f32>, R : vec3<f32>, distTotal : f32) -> vec3<f32> {
   let vdh = max(dot(V, Hh), 1e-3);
   let Gv = min(1.0, min(2.0 * ndh * cosv / vdh, 2.0 * ndh * ndl / vdh));
   let Fh = fresnelAir(vdh);
-  let Lspec = min(G.sunE.rgb * D * Gv * Fh * 0.25 / max(cosv, 0.04), vec3<f32>(3000.0)) * step(0.001, ndl);
+  let Lspec = min(G.sunE.rgb * D * Gv * Fh * 0.25 / max(cosv, 0.04), vec3<f32>(3000.0)) * step(0.001, ndl) * cs;
 
   // ---- refraction: march the refracted view ray to the real seabed
   var Lrefr = vec3<f32>(0.0);
   let Tdir = refract(-V, N, 1.0 / N_WATER);
   let TfSun = 1.0 - fresnelAir(G.sunDir.y);
-  let Ed = G.sunE.rgb * TfSun * G.sunDir.y + G.skyE.rgb * 0.93;   // total downwelling irradiance just below the surface
+  let Ed = G.sunE.rgb * TfSun * G.sunDir.y * cs + G.skyE.rgb * 0.93;   // total downwelling irradiance just below the surface
   let cosIs = G.sunDir.y;
   let sinTs = sqrt(max(1.0 - cosIs * cosIs, 0.0)) / N_WATER;
   let cosTs = sqrt(max(1.0 - sinTs * sinTs, 0.0));
@@ -641,7 +642,7 @@ fn reflectedLand(q : vec3<f32>, R : vec3<f32>, distTotal : f32) -> vec3<f32> {
     var C = causticAt(B.xz, lod, distB);
     if (G.tint.z > 0.5) { C = 1.0; }
     let cosBed = max(dot(nb, -wsun), 0.0);
-    let Esun = G.sunE.rgb * TfSun * cosIs * (cosBed / cosTs) * exp(-K * (depthB / cosTs)) * C;
+    let Esun = G.sunE.rgb * TfSun * cosIs * (cosBed / cosTs) * exp(-K * (depthB / cosTs)) * C * cs;
     let Esky = G.skyE.rgb * 0.93 * exp(-K * depthB * 1.35) * (0.5 + 0.5 * nb.y);
     let Lbed = alb / PI * (Esun + Esky);
     let pathV = length(B - P);
@@ -668,7 +669,7 @@ fn reflectedLand(q : vec3<f32>, R : vec3<f32>, distTotal : f32) -> vec3<f32> {
   let wcap = smoothstep(0.14, 0.72, ws.z * (0.5 + 1.0 * nf2) * 1.3);
   var foam = clamp(wcap + lace * 0.9 + edgeLine * 0.5 + brk * (0.35 + 0.65 * nf) + rp.w * 0.55, 0.0, 1.0);
   foam = foam * foam * (3.0 - 2.0 * foam);
-  let Lfoam = vec3<f32>(0.90, 0.92, 0.90) / PI * (G.sunE.rgb * max(dot(N, Ls), 0.0) * 0.9 + G.skyE.rgb * (0.5 + 0.5 * N.y));
+  let Lfoam = vec3<f32>(0.90, 0.92, 0.90) / PI * (G.sunE.rgb * max(dot(N, Ls), 0.0) * 0.9 * cs + G.skyE.rgb * (0.5 + 0.5 * N.y));
 
   let Gr = smithG1(R.y, max(mssTotalAt(dRest) - ws.w, 0.0));
   var col = Lrefr + F * Gr * Lrefl + Lspec;
@@ -726,7 +727,8 @@ fn reflectedLand(q : vec3<f32>, R : vec3<f32>, distTotal : f32) -> vec3<f32> {
   CV.wgsl.post = /* wgsl */`
 @group(0) @binding(0) var hdr : texture_2d<f32>;
 @group(0) @binding(1) var samP : sampler;
-@group(0) @binding(2) var<uniform> PP : array<vec4<f32>, 3>;   // [0] exposure, vignette, time, saturation ; [1] raw-debug flag, source w, source h, night ; [2] sharpen, -
+@group(0) @binding(2) var<uniform> PP : array<vec4<f32>, 3>;   // [0] exposure, vignette, time, saturation ; [1] raw-debug flag, source w, source h, night ; [2] sharpen, bloom strength, 1 / bloom levels, -
+@group(0) @binding(4) var bloomTex : texture_2d<f32>;           // sum of the bloom chain's levels (see src/bloom.js)
 @group(0) @binding(3) var ldr : texture_2d<f32>;
 struct VOut { @builtin(position) pos : vec4<f32>, @location(0) uv : vec2<f32> };
 @vertex fn vs(@builtin(vertex_index) vid : u32) -> VOut {
@@ -750,8 +752,10 @@ fn toSrgb(c : vec3<f32>) -> vec3<f32> {
   let lo = c * 12.92; let hi = 1.055 * pow(max(c, vec3<f32>(0.0)), vec3<f32>(1.0 / 2.4)) - 0.055;
   return select(hi, lo, c <= vec3<f32>(0.0031308));
 }
-fn grade(raw : vec3<f32>, uv : vec2<f32>) -> vec3<f32> {
+fn grade(raw0 : vec3<f32>, uv : vec2<f32>) -> vec3<f32> {
   let P = PP[0];
+  // bloom: the spread-out excess of light above the glow threshold (see src/bloom.js), averaged over the chain's levels
+  let raw = raw0 + textureSampleLevel(bloomTex, samP, uv, 0.0).rgb * (PP[2].z * PP[2].y);
   var c = raw * P.x;
   if (PP[1].w > 0.001) {                                            // night: rod-vision look — desaturate and shift toward blue (Purkinje), highlights keep their colour
     let l = dot(c, vec3<f32>(0.2126, 0.7152, 0.0722));

@@ -43,6 +43,8 @@
       this.structs = new CV.Structures(gpu);
       this.timer = new CV.GpuTimer(gpu);
       this.taa = new CV.TAA(gpu);
+      this.bloom = new CV.Bloom(gpu);
+      this.bloomStrength = 0.5;
       this.ready = this.init();
     }
 
@@ -83,7 +85,8 @@
       this.postBGL = dev.createBindGroupLayout({ entries: [
         { binding: 0, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } },
         { binding: 1, visibility: GPUShaderStage.FRAGMENT, sampler: { type: 'filtering' } },
-        { binding: 2, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } }] });
+        { binding: 2, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
+        { binding: 4, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } }] });
       this.upBGL = dev.createBindGroupLayout({ entries: [
         { binding: 2, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'uniform' } },
         { binding: 3, visibility: GPUShaderStage.FRAGMENT, texture: { sampleType: 'float' } }] });
@@ -168,9 +171,11 @@
       this.ldr = up ? dev.createTexture({ label: 'ldr', size: [w, h], format: 'rgba8unorm', usage: RA | GPUTextureUsage.TEXTURE_BINDING }) : null;
       this.hdrView = this.hdr.createView(); this.hdrMSView = this.hdrMS && this.hdrMS.createView(); this.depthView = this.depth.createView();
       this.ldrView = this.ldr && this.ldr.createView();
-      const postBG = (view) => dev.createBindGroup({ layout: this.postBGL, entries: [{ binding: 0, resource: view }, { binding: 1, resource: this.samPost }, { binding: 2, resource: { buffer: this.pBuf } }] });
-      this.postBG = postBG(this.hdrView);
       this.taa.resize(w, h, this.hdrView, this.depthView);              // history pair; grading then reads whichever holds this frame's result
+      this.bloom.resize(w, h, [this.hdrView]);
+      const postBG = (view) => dev.createBindGroup({ layout: this.postBGL, entries: [{ binding: 0, resource: view }, { binding: 1, resource: this.samPost },
+        { binding: 2, resource: { buffer: this.pBuf } }, { binding: 4, resource: this.bloom.view }] });
+      this.postBG = postBG(this.hdrView);
       this.postBGTaa = this.taa.views.map(postBG);
       this.upBG = up ? dev.createBindGroup({ layout: this.upBGL, entries: [{ binding: 2, resource: { buffer: this.pBuf } }, { binding: 3, resource: this.ldrView }] }) : null;
     }
@@ -287,9 +292,17 @@
       }
       if (!skip.water) { pass.setPipeline(this.pWater); pass.setIndexBuffer(this.waterIdx, 'uint32'); pass.drawIndexed(this.waterIdxCount); }
       pass.end();
-      const postBG = taa ? this.postBGTaa[this.taa.encode(enc, s.cam, jit, 0.12)] : this.postBG;
+      const ti = taa ? this.taa.encode(enc, s.cam, jit, 0.12) : -1;
+      const postBG = taa ? this.postBGTaa[ti] : this.postBG;
+      const bloomK = this.debugView === 0 ? this.bloomStrength * (s.night ? 0.6 : 1) : 0;
+      // bloom reads the raw scene, not the TAA output: TAA averages on tone-compressed colour, which deliberately damps isolated bright pixels,
+      // and those (glints, the sun) are what should glow. The blur is wide, so the sub-pixel jitter of the raw frame does not show.
+      // glows from where the exposed image passes ~1.6 (the tone mapper's shoulder). At night the moon's disc outshines everything around it by far
+      // more than the sun's glints do by day: a lower per-pixel cap keeps its glow small enough that the crescent still reads.
+      const thr = 1.6 / s.exposureLin;
+      if (bloomK > 0) this.bloom.encode(enc, 0, thr, s.night ? 5 * thr : 400);
       gpu.queue.writeBuffer(this.pBuf, 0, new Float32Array([s.exposureLin, s.vignette, (s.time * 60) % 1000, 1.12, this.debugView === 7 ? 1 : 0, this.width, this.height, s.night ? 1 : 0,
-        taa ? 0.8 : 0, 0, 0, 0]));
+        taa ? 0.8 : 0, bloomK, 1 / this.bloom.n, 0]));
       if (this.upscale) {
         const g = enc.beginRenderPass({ label: 'grade', timestampWrites: CV.tw('grade'), colorAttachments: [{ view: this.ldrView, loadOp: 'clear', clearValue: [0, 0, 0, 1], storeOp: 'store' }] });
         g.setPipeline(this.pGrade); g.setBindGroup(0, postBG); g.draw(3); g.end();

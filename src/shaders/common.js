@@ -293,6 +293,14 @@ fn clouds(dir : vec3<f32>) -> vec4<f32> {
   let fade = smoothstep(0.05, 0.30, dir.y);
   return vec4<f32>(mix(G.horizon.rgb * 1.05, col, fade * 0.9 + 0.1), d * fade);
 }
+// Fraction of direct sun (or moon) light reaching p through the cloud layer: the sun ray from p crosses the 2800 m layer where the sky pass
+// draws the cloud (same drift), so shadows move with the clouds overhead. Cumulus let little direct light through their cores.
+fn cloudShadow(p : vec3<f32>) -> f32 {
+  if (G.tint.y < 0.01 || G.sunDir.y < 0.03) { return 1.0; }
+  let L = G.sunDir.xyz;
+  let q = p.xz + L.xz * ((2800.0 - p.y) / L.y) + vec2<f32>(nowT() * -7.0, nowT() * 2.0);
+  return 1.0 - 0.85 * cloudDensity(q, true);
+}
 fn skyWithClouds(dir : vec3<f32>) -> vec3<f32> {
   let c = clouds(dir);
   var L = skyRadiance(dir);
